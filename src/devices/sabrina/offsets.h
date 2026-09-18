@@ -18,7 +18,6 @@ OFFSETS_ENTRY("5.15.170-android14-11-gf4a1f03072af",
   .off_init_task          = 0x0120BAC0ULL,
   .off_init_cred          = 0x0121C558ULL,
   .off_init_user_ns       = 0x0121B080ULL,  /* REFERENCE vmlinux (clang-22/LTO_NONE) - NOT device-valid; storm/diagnostic only */
-  .off_selinux_enforcing_device = 0x01C08F30ULL, /* device .bss pair-verified (selinux_state = selinux_avc + 0x1828) */
   .off_init_user_ns_device = 0x019EB898ULL, /* OBSERVED on-device &init_user_ns = anchor+0x19EB898. Previous 0x19EB080 (boot-log .data start + reference in-.data offset) is 0x818 too low; that wrong ns is not an ancestor of targ_ns and its ->level is negative, so cap_capable() walks ns->parent off the top (init_user_ns->parent==NULL) and NULL-derefs -> kernel panic. */
   /* DEVICE selinux_state, anchor-relative - DERIVED FROM THE OBSERVED
    * avc/state PAIR, verified on device across multiple boots/storms:
@@ -84,6 +83,11 @@ OFFSETS_ENTRY("5.15.170-android14-11-gf4a1f03072af",
   /* 5.15 rt_mutex_waiter: prio/deadline are separate fields, not in rb_node.
    Compact layout: task at waiter word 6, lock at 7. */
   .waiter_compact = 1,
+  .waiter_pi_tree = 0x18,
+  .waiter_task = 0x30,
+  .waiter_lock = 0x38,
+  .waiter_wake_state = 0x40,
+  .waiter_ww_ctx = 0x50,
 
   .fops_llseek = 0x10,
   .fops_read = 0x18,

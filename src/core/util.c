@@ -328,7 +328,9 @@ int has_zero_byte(uintptr_t value) {
 uint64_t p0_kernel_phys_load = P0_KERNEL_PHYS_LOAD;
 uint64_t p0_phys_offset = P0_PHYS_OFFSET;
 
-uintptr_t g_init_cred_image = INIT_CRED;
+/* Set after the uname profile has been selected.  A runtime-selected text
+ * base is not a C constant initializer. */
+uintptr_t g_init_cred_image = 0;
 
 void init_p0_profile(void) {
   char *v = getenv("KPHYS");

@@ -13,7 +13,7 @@ CFLAGS := -O2 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function
   -include stubs/dl_stub.h
 LDFLAGS := -static -pthread
 
-.PHONY: all clean
+.PHONY: all clean profile-guard-test
 
 all: ghostlock
 
@@ -22,3 +22,9 @@ ghostlock: $(SRCS)
 
 clean:
 	rm -f ghostlock
+
+# Native, host-only validation of the non-runnable TCL profile.  This target
+# does not compile or execute the exploit implementation.
+profile-guard-test:
+	$(CC) -O2 -Wall -Isrc/devices tests/profile_guard.c -o /tmp/ghostlock-profile-guard
+	/tmp/ghostlock-profile-guard

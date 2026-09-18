@@ -987,10 +987,6 @@ void do_pselect_fake_lock_route(void) {
         cfi_last_step = 0;
         cfi_last_errno = 0;
         route_verified = 1;
-        if (active_offsets && active_offsets->off_system_unbound_wq &&
-            !0) {
-          0;
-        }
       } else if (0) {
         cfi_last_step = 0;
         route_verified = 1;
@@ -1111,4 +1107,3 @@ int restore_slide_boot_id(int fd) {
   return slide_bootid_restore_ret == (ssize_t)sizeof(slide_bootid_want) &&
          slide_bootid_after == slide_bootid_want;
 }
-
