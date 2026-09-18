@@ -52,6 +52,9 @@ static int print_profile_info(const char *release_override) {
   }
   printf("profile=present\n");
   printf("analysis_only=%u\n", profile->analysis_only);
+  printf("stack_overlay_route=%s\n",
+         profile->stack_overlay_route == GHOST_STACK_OVERLAY_TCL_V643_PSELECT6 ?
+             "tcl-v643-pselect6" : "seqpacket");
   printf("analysis_blocker=%s\n",
          profile->analysis_blocker ? profile->analysis_blocker : "");
   printf("kimage_text_base=0x%016llx\n",
@@ -544,10 +547,10 @@ void run_main_route_threads(void) {
      * STILL RUNNING FUTEX_WAIT_REQUEUE_PI syscall), signal the waiter.
      *
      * The futex returns -ERESTARTNOINTR (kernel-internal), the SIGUSR1
-     * handler runs the SEQPACKET overlay route on the waiter's kernel
+     * handler runs the profile-selected overlay route on the waiter's kernel
      * stack at the exact same syscall-entry depth, the consumer fires the
-     * PI chain walks against that overlay while the handler blocks in
-     * sendmsg, and only then does the handler return -- the futex
+     * PI chain walks against that overlay while its carrier blocks, and only
+     * then does the handler return -- the futex
      * restarts, times out immediately against its original absolute
      * deadline, and its ETIMEDOUT cleanup path runs over the QUIESCED
      * spray page (it only takes hb->lock and plist_del's the futex_q;

@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include "tcl_v643/stack_geometry.h"
+#include "tcl_v643/pselect_carrier.h"
 
 /*
  * Safe host-only semantic check.  It does not exercise the futex bug or any
@@ -19,11 +20,10 @@
  */
 int main(void) {
   int sv[2] = {-1, -1};
-  fd_set exceptfds;
-  uint64_t words[TCL_V643_FDSET_BYTES / sizeof(uint64_t)] = {0};
+  fd_set readfds, writefds, exceptfds;
+  struct tcl_v643_pselect_carrier carrier;
   const uint64_t representative_task = UINT64_C(0xffffff8001234000);
   const uint64_t representative_lock = UINT64_C(0xffffff8001234800);
-  const uint64_t wake_prio = (UINT64_C(1) << 32) | UINT64_C(3);
   struct timespec timeout = {.tv_sec = 0, .tv_nsec = 50000000};
   int rc = 1;
 
@@ -36,22 +36,25 @@ int main(void) {
     return 1;
   }
 
+  tcl_v643_build_pselect_carrier(
+      &carrier, representative_task, representative_lock, 3, 1);
   for (int fd = 128; fd < (int)TCL_V643_PSELECT_NFDS; fd++) {
+    if (!tcl_v643_carrier_fd_selected(&carrier, (unsigned)fd)) continue;
     if (dup2(sv[0], fd) < 0) {
       perror("dup2");
       goto out;
     }
   }
-
-  /* in.except +0x10/+0x18/+0x20: waiter.task, lock, wake/prio. */
-  words[2] = representative_task;
-  words[3] = representative_lock;
-  words[4] = wake_prio;
+  memset(&readfds, 0, sizeof(readfds));
+  memset(&writefds, 0, sizeof(writefds));
   memset(&exceptfds, 0, sizeof(exceptfds));
-  memcpy(&exceptfds, words, sizeof(words));
+  memcpy(&readfds, carrier.readfds, sizeof(carrier.readfds));
+  memcpy(&writefds, carrier.writefds, sizeof(carrier.writefds));
+  memcpy(&exceptfds, carrier.exceptfds, sizeof(carrier.exceptfds));
 
   errno = 0;
-  int ret = pselect(TCL_V643_PSELECT_NFDS, NULL, NULL, &exceptfds,
+  int ret = pselect(TCL_V643_PSELECT_NFDS,
+                    &readfds, &writefds, &exceptfds,
                     &timeout, NULL);
   if (ret != 0) {
     fprintf(stderr, "FAIL: pselect ret=%d errno=%d (%s)\n",
@@ -63,7 +66,9 @@ int main(void) {
   rc = 0;
 
 out:
-  for (int fd = 128; fd < (int)TCL_V643_PSELECT_NFDS; fd++) close(fd);
+  for (int fd = 128; fd < (int)TCL_V643_PSELECT_NFDS; fd++) {
+    if (tcl_v643_carrier_fd_selected(&carrier, (unsigned)fd)) close(fd);
+  }
   close(sv[0]);
   close(sv[1]);
   return rc;

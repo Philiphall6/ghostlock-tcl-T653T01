@@ -28,6 +28,9 @@ int main(void) {
 
   failed |= require(tcl->analysis_only == 1,
                     "TCL V643 profile must remain analysis-only");
+  failed |= require(tcl->stack_overlay_route ==
+                        GHOST_STACK_OVERLAY_TCL_V643_PSELECT6,
+                    "TCL V643 must select its pselect6 carrier");
   failed |= require(tcl->analysis_blocker != NULL &&
                     strstr(tcl->analysis_blocker, "not dynamically proven") != NULL,
                     "analysis-only profile must state its blocker");

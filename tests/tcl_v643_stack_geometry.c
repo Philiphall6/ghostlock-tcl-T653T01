@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "tcl_v643/stack_geometry.h"
+#include "tcl_v643/pselect_carrier.h"
 
 _Static_assert(TCL_V643_PSELECT_FRAME_SIZE +
                    TCL_V643_CORE_SELECT_FRAME_SIZE -
@@ -68,6 +69,7 @@ int main(void) {
   const int32_t prio = 1;
   uint64_t got64;
   uint32_t got32;
+  struct tcl_v643_pselect_carrier carrier;
   int failed = 0;
 
   memcpy(waiter + TCL_V643_WAITER_TASK, &fake_task, sizeof(fake_task));
@@ -88,6 +90,14 @@ int main(void) {
   failed |= require(got64 == 0, "zeroed output set must supply deadline=0");
   memcpy(&got64, waiter + TCL_V643_WAITER_WW_CTX, sizeof(got64));
   failed |= require(got64 == 0, "zeroed output set must supply ww_ctx=NULL");
+
+  tcl_v643_build_pselect_carrier(
+      &carrier, fake_task, fake_lock, wake_state, prio);
+  failed |= require(memcmp(stack_fds, &carrier, sizeof(carrier)) == 0,
+                    "pselect carrier does not reproduce the exact input sets");
+  for (unsigned fd = 0; fd < 128; fd++)
+    failed |= require(!tcl_v643_carrier_fd_selected(&carrier, fd),
+                      "carrier unexpectedly aliases a low control fd");
 
   printf("syscall_sp: stack_fds=-0x%x waiter=-0x%x delta=+0x%x\n",
          TCL_V643_STACK_FDS_FROM_SYSCALL_SP,

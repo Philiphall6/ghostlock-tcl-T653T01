@@ -3,12 +3,18 @@
 
 #include <stdint.h>
 
+enum ghost_stack_overlay_route {
+  GHOST_STACK_OVERLAY_SEQPACKET = 0,
+  GHOST_STACK_OVERLAY_TCL_V643_PSELECT6 = 1,
+};
+
 struct kernel_offsets {
   const char *uname_r;
   /* Profiles may be committed before every dangerous address/geometry value
    * is proven.  Such entries are visible to offline tooling but must never
    * arm the exploit. */
   uint8_t analysis_only;
+  uint8_t stack_overlay_route;
   const char *analysis_blocker;
   /* Physical load address of the kernel image, chosen by the bootloader.
    * Varies per SoC/board and is not derivable from boot.img — read it from

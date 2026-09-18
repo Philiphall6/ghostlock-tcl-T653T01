@@ -11,6 +11,7 @@
  */
 OFFSETS_ENTRY("5.15.180-android14-11",
   .analysis_only = 1,
+  .stack_overlay_route = GHOST_STACK_OVERLAY_TCL_V643_PSELECT6,
   .analysis_blocker = "TCL V643 pselect6 stack-overlay/reclaim route not dynamically proven",
   /* Intentional safety sentinel; proven physical _text is documented offline. */
   .kernel_phys_load = 0,
