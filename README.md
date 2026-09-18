@@ -1,5 +1,12 @@
 # GhostLock Sabrina
 
+> **TCL V643 analysis branch:** the added TCL C855/T653T01 profile is an
+> offline-only, non-runnable port. It remains guarded by `analysis_only=1`,
+> `kernel_phys_load=0` and `reclaim_route=tcl-v643-unproven`. Do not use the
+> deployment commands below on the TCL TV. `--profile-info
+> 5.15.180-android14-11` is the only TCL-oriented validation performed, under
+> QEMU user mode and never on the television.
+
 Root exploit for **Chromecast with Google TV** (sabrina) via [CVE-2026-43499](https://nvd.nist.gov/vuln/detail/CVE-2026-43499) -- a use-after-free in the Linux kernel's futex PI (priority inheritance) subsystem.
 
 Achieves root on a **locked bootloader** device running Android 14 with kernel 5.15.170 (PGO+BOLT+LTO, clang 17).

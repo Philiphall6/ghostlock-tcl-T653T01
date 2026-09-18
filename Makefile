@@ -14,7 +14,7 @@ CFLAGS := -O2 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function
 LDFLAGS := -static -pthread
 
 .PHONY: all clean profile-guard-test tcl-v643-stack-geometry-test \
-	tcl-v643-pselect-semantics-test
+	tcl-v643-pselect-semantics-test tcl-v643-runtime-offsets-test
 
 all: ghostlock
 
@@ -41,3 +41,9 @@ tcl-v643-stack-geometry-test:
 tcl-v643-pselect-semantics-test:
 	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_pselect_semantics.c -o /tmp/tcl-v643-pselect-semantics
 	/tmp/tcl-v643-pselect-semantics
+
+# Host-only verification that the macros consumed by the implementation are
+# actually overridden by the TCL profile rather than inherited from target.h.
+tcl-v643-runtime-offsets-test:
+	$(CC) -O2 -Wall -Isrc/core -Isrc/devices tests/tcl_v643_runtime_offsets.c -o /tmp/tcl-v643-runtime-offsets
+	/tmp/tcl-v643-runtime-offsets

