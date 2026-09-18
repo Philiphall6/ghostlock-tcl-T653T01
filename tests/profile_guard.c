@@ -29,7 +29,7 @@ int main(void) {
   failed |= require(tcl->analysis_only == 1,
                     "TCL V643 profile must remain analysis-only");
   failed |= require(tcl->analysis_blocker != NULL &&
-                    tcl->analysis_blocker[0] != '\0',
+                    strstr(tcl->analysis_blocker, "not dynamically proven") != NULL,
                     "analysis-only profile must state its blocker");
   failed |= require(tcl->kernel_phys_load == 0,
                     "unproven kernel physical load must stay unset");

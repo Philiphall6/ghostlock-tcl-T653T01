@@ -13,7 +13,8 @@ CFLAGS := -O2 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function
   -include stubs/dl_stub.h
 LDFLAGS := -static -pthread
 
-.PHONY: all clean profile-guard-test
+.PHONY: all clean profile-guard-test tcl-v643-stack-geometry-test \
+	tcl-v643-pselect-semantics-test
 
 all: ghostlock
 
@@ -28,3 +29,15 @@ clean:
 profile-guard-test:
 	$(CC) -O2 -Wall -Isrc/devices tests/profile_guard.c -o /tmp/ghostlock-profile-guard
 	/tmp/ghostlock-profile-guard
+
+# Host-only static model of offsets recovered from the exact TCL V643 binary.
+# It neither builds nor runs the exploit implementation.
+tcl-v643-stack-geometry-test:
+	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_stack_geometry.c -o /tmp/tcl-v643-stack-geometry
+	/tmp/tcl-v643-stack-geometry
+
+# Host-only Linux semantics check for the proposed exceptfds carrier.  No
+# vulnerable futex operation or kernel address is used.
+tcl-v643-pselect-semantics-test:
+	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_pselect_semantics.c -o /tmp/tcl-v643-pselect-semantics
+	/tmp/tcl-v643-pselect-semantics

@@ -1,15 +1,17 @@
 /* TCL C855 / T653T01 (G08), stock V643.
  *
  * Kernel and BTF are from the exact OTA boot image.  This entry deliberately
- * remains analysis-only until a TCL-specific stack-overlay and page-reclaim
- * route have been independently verified.  The exact physical _text address
+ * remains analysis-only until the new pselect6 stack-overlay candidate and
+ * page-reclaim route have been independently verified.  The previous
+ * SEQPACKET/sendmsg geometry is proven incompatible with this kernel.  The
+ * exact physical _text address
  * is proven offline as 0x26000000, but kernel_phys_load deliberately remains
  * the zero sentinel while the route blocker is active.  Selecting this entry
  * must stop before any primitive is armed.
  */
 OFFSETS_ENTRY("5.15.180-android14-11",
   .analysis_only = 1,
-  .analysis_blocker = "TCL V643 SEQPACKET stack-overlay/reclaim route not proven",
+  .analysis_blocker = "TCL V643 pselect6 stack-overlay/reclaim route not dynamically proven",
   /* Intentional safety sentinel; proven physical _text is documented offline. */
   .kernel_phys_load = 0,
   /* /proc/zoneinfo: start_pfn=131072, PAGE_SIZE=4096. */
