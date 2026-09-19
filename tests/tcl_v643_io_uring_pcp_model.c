@@ -57,8 +57,8 @@ static bool pcp_free(struct pcp_cpu *pcp, unsigned order,
 /* get_populated_pcp_list() returns the exact list selected by
  * order/migratetype.  Its caller loads list->next and removes that first
  * entry, so the direct PCP path is LIFO. */
-static enum page_id pcp_alloc(struct pcp_cpu *pcp, unsigned order,
-                              unsigned migratetype) {
+static enum page_id pcp_direct_alloc(struct pcp_cpu *pcp, unsigned order,
+                                     unsigned migratetype) {
   struct pcp_list *list = &pcp->lists[order][migratetype];
   if (!list->count) return PAGE_NONE;
   enum page_id page = list->pages[0];
@@ -67,6 +67,16 @@ static enum page_id pcp_alloc(struct pcp_cpu *pcp, unsigned order,
   list->count--;
   pcp->count -= 1U << order;
   return page;
+}
+
+/* When the exact list is empty, V643 get_populated_pcp_list() refills it from
+ * the buddy allocator.  This helper captures the batch scaling only; the
+ * buddy contents/fallback policy are intentionally outside the direct-PCP
+ * model. */
+static unsigned refill_batch(unsigned batch, unsigned order) {
+  if (batch <= 1) return batch;
+  unsigned scaled = batch >> order;
+  return scaled > 2 ? scaled : 2;
 }
 
 static unsigned get_order(unsigned bytes) {
@@ -99,6 +109,8 @@ int main(void) {
   failed |= require(TCL_V643_PCP_LIST_INDEX(2, unmovable) == 8 &&
                     TCL_V643_PCP_LIST_INDEX(2, movable) == 9,
                     "V643 PCP list index formula mismatch");
+  failed |= require(refill_batch(63, order) == 15,
+                    "V643 snapshot batch must refill 15 order-2 pages");
 
   /* Archived read-only zoneinfo snapshot: count=1802, high=1928.  With no
    * intervening same-list free, the discarded UNMOVABLE target is the head
@@ -108,7 +120,7 @@ int main(void) {
   cpus[0].high = 1928;
   failed |= require(pcp_free(&cpus[0], order, unmovable, PAGE_TARGET),
                     "snapshot margin should avoid the bulk path");
-  failed |= require(pcp_alloc(&cpus[0], order, unmovable) == PAGE_TARGET,
+  failed |= require(pcp_direct_alloc(&cpus[0], order, unmovable) == PAGE_TARGET,
                     "first same-CPU order-2 UNMOVABLE allocation missed head");
 
   /* io_uring_setup(256) performs two consecutive order-2 allocations.  One
@@ -117,9 +129,9 @@ int main(void) {
   struct pcp_cpu one_interloper = {.count = 100, .high = 256};
   pcp_free(&one_interloper, order, unmovable, PAGE_TARGET);
   pcp_free(&one_interloper, order, unmovable, PAGE_DECOY_A);
-  failed |= require(pcp_alloc(&one_interloper, order, unmovable) == PAGE_DECOY_A,
+  failed |= require(pcp_direct_alloc(&one_interloper, order, unmovable) == PAGE_DECOY_A,
                     "LIFO did not return the newer exact-list page first");
-  failed |= require(pcp_alloc(&one_interloper, order, unmovable) == PAGE_TARGET,
+  failed |= require(pcp_direct_alloc(&one_interloper, order, unmovable) == PAGE_TARGET,
                     "second io_uring allocation did not reach target");
 
   /* Two newer exact-list frees exceed the two-allocation coverage. */
@@ -127,8 +139,8 @@ int main(void) {
   pcp_free(&two_interlopers, order, unmovable, PAGE_TARGET);
   pcp_free(&two_interlopers, order, unmovable, PAGE_DECOY_A);
   pcp_free(&two_interlopers, order, unmovable, PAGE_DECOY_B);
-  failed |= require(pcp_alloc(&two_interlopers, order, unmovable) != PAGE_TARGET &&
-                    pcp_alloc(&two_interlopers, order, unmovable) != PAGE_TARGET,
+  failed |= require(pcp_direct_alloc(&two_interlopers, order, unmovable) != PAGE_TARGET &&
+                    pcp_direct_alloc(&two_interlopers, order, unmovable) != PAGE_TARGET,
                     "two newer frees should hide target beyond ring+SQE");
 
   /* A different PCP migratetype neither displaces nor satisfies the exact
@@ -137,19 +149,19 @@ int main(void) {
   struct pcp_cpu cross_type = {.count = 100, .high = 256};
   pcp_free(&cross_type, order, unmovable, PAGE_TARGET);
   pcp_free(&cross_type, order, movable, PAGE_DECOY_A);
-  failed |= require(pcp_alloc(&cross_type, order, unmovable) == PAGE_TARGET,
+  failed |= require(pcp_direct_alloc(&cross_type, order, unmovable) == PAGE_TARGET,
                     "different migratetype displaced exact PCP head");
 
   struct pcp_cpu movable_target = {.count = 100, .high = 256};
   pcp_free(&movable_target, order, movable, PAGE_TARGET);
-  failed |= require(pcp_alloc(&movable_target, order, unmovable) == PAGE_NONE,
-                    "UNMOVABLE lookup directly consumed MOVABLE target");
+  failed |= require(pcp_direct_alloc(&movable_target, order, unmovable) == PAGE_NONE,
+                    "UNMOVABLE direct lookup consumed MOVABLE target");
 
   /* PCPs are per CPU. */
   cpus[0] = (struct pcp_cpu){.count = 100, .high = 256};
   cpus[1] = (struct pcp_cpu){.count = 100, .high = 256};
   pcp_free(&cpus[1], order, unmovable, PAGE_TARGET);
-  failed |= require(pcp_alloc(&cpus[0], order, unmovable) == PAGE_NONE,
+  failed |= require(pcp_direct_alloc(&cpus[0], order, unmovable) == PAGE_NONE,
                     "allocation on another CPU consumed target PCP list");
 
   /* At equality the V643 branch enters free_pcppages_bulk().  The direct
@@ -161,7 +173,7 @@ int main(void) {
 
   if (failed) return 1;
   puts("PASS: V643 io_uring/PCP model: two order-2 UNMOVABLE allocations; "
-       "direct capture is conditional on same CPU/type, count+4<high, "
-       "and at most one newer exact-list free");
+       "empty-list refill=15 at batch=63; direct capture is conditional "
+       "on same CPU/type, count+4<high, and at most one newer exact-list free");
   return 0;
 }
