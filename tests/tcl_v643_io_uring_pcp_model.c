@@ -15,6 +15,29 @@ enum page_id {
   PAGE_DECOY_B,
 };
 
+enum direct_route_result {
+  ROUTE_DIRECT_CAPTURE = 0,
+  ROUTE_DIRECT_MISS,
+  ROUTE_BUDDY_UNKNOWN,
+  ROUTE_BULK_UNKNOWN,
+};
+
+struct direct_route_conditions {
+  unsigned free_zone;
+  unsigned alloc_zone;
+  unsigned free_cpu;
+  unsigned alloc_cpu;
+  unsigned free_type;
+  unsigned alloc_type;
+  unsigned old_count;
+  unsigned high;
+  unsigned newer_exact_list_frees;
+  bool free_trylock;
+  bool first_alloc_trylock;
+  bool second_alloc_trylock;
+  bool vendor_bypass;
+};
+
 struct pcp_list {
   enum page_id pages[MODEL_DEPTH];
   unsigned count;
@@ -91,6 +114,38 @@ static unsigned get_order(unsigned bytes) {
   return order;
 }
 
+/* Both callers request ZONE_NORMAL.  The exact TCL snapshot has no managed
+ * NORMAL pages and one NUMA node, so the first usable lower zone is DMA32.
+ * This models only that proved V643 topology, not a generic Linux zonelist. */
+static unsigned v643_actual_kernel_zone(void) {
+  if (TCL_V643_NORMAL_MANAGED_PAGES)
+    return TCL_V643_ZONE_NORMAL;
+  if (TCL_V643_DMA32_MANAGED_PAGES)
+    return TCL_V643_ZONE_DMA32;
+  return TCL_V643_ZONE_NONE;
+}
+
+/* Qualification matrix for the two-allocation direct-PCP claim.  A trylock
+ * failure, vendor diversion or bulk drain does not prove a miss: it hands
+ * control to a buddy/bulk path that this deliberately small model treats as
+ * unknown.  Two newer exact-list frees are a proved direct miss because the
+ * rings and SQE allocations consume only two entries. */
+static enum direct_route_result qualify_direct_route(
+    const struct direct_route_conditions *c) {
+  if (c->free_zone != c->alloc_zone || c->free_cpu != c->alloc_cpu ||
+      c->free_type != c->alloc_type)
+    return ROUTE_DIRECT_MISS;
+  if (!c->free_trylock || c->vendor_bypass)
+    return ROUTE_BUDDY_UNKNOWN;
+  if (c->old_count + (1U << TCL_V643_IO_URING_RINGS_ORDER) >= c->high)
+    return ROUTE_BULK_UNKNOWN;
+  if (!c->first_alloc_trylock || !c->second_alloc_trylock)
+    return ROUTE_BUDDY_UNKNOWN;
+  if (c->newer_exact_list_frees > 1)
+    return ROUTE_DIRECT_MISS;
+  return ROUTE_DIRECT_CAPTURE;
+}
+
 int main(void) {
   int failed = 0;
   const unsigned order = TCL_V643_IO_URING_RINGS_ORDER;
@@ -113,6 +168,19 @@ int main(void) {
                     (TCL_V643_GFP_MOVABLE |
                      TCL_V643_GFP_RECLAIMABLE)) == 0,
                     "io_uring GFP unexpectedly requests a movable type");
+  failed |= require((TCL_V643_MM_STRUCT_GFP &
+                    (TCL_V643_GFP_MOVABLE |
+                     TCL_V643_GFP_RECLAIMABLE)) == 0,
+                    "copy_mm GFP unexpectedly requests a movable type");
+  failed |= require((TCL_V643_MM_STRUCT_GFP &
+                     TCL_V643_GFP_ZONE_BITS_MASK) == 0 &&
+                    (TCL_V643_IO_URING_GFP &
+                     TCL_V643_GFP_ZONE_BITS_MASK) == 0 &&
+                    TCL_V643_REQUESTED_HIGHEST_ZONE ==
+                     TCL_V643_ZONE_NORMAL,
+                    "V643 callers must request the same highest zone");
+  failed |= require(v643_actual_kernel_zone() == TCL_V643_ZONE_DMA32,
+                    "empty NORMAL zone must force both callers to DMA32");
   failed |= require(TCL_V643_PCP_LIST_INDEX(2, unmovable) == 8 &&
                     TCL_V643_PCP_LIST_INDEX(2, movable) == 9,
                     "V643 PCP list index formula mismatch");
@@ -188,9 +256,55 @@ int main(void) {
                     at_high.bulk_path,
                     "count + four equal to high must enter bulk path");
 
+  /* The current implementation pins the orchestrator before copy_mm, the
+   * memfd close/task-work free and io_uring setup.  Model that proved same-CPU
+   * case separately from the still-dynamic lock/count/interference inputs. */
+  struct direct_route_conditions route = {
+    .free_zone = v643_actual_kernel_zone(),
+    .alloc_zone = v643_actual_kernel_zone(),
+    .free_cpu = 0,
+    .alloc_cpu = 0,
+    .free_type = unmovable,
+    .alloc_type = unmovable,
+    .old_count = 1802,
+    .high = 1928,
+    .free_trylock = true,
+    .first_alloc_trylock = true,
+    .second_alloc_trylock = true,
+  };
+  failed |= require(qualify_direct_route(&route) == ROUTE_DIRECT_CAPTURE,
+                    "qualified same-zone/CPU direct route should capture");
+  route.newer_exact_list_frees = 1;
+  failed |= require(qualify_direct_route(&route) == ROUTE_DIRECT_CAPTURE,
+                    "two io_uring allocations must cover one interloper");
+  route.newer_exact_list_frees = 2;
+  failed |= require(qualify_direct_route(&route) == ROUTE_DIRECT_MISS,
+                    "two interlopers must exceed direct coverage");
+  route.newer_exact_list_frees = 0;
+  route.free_trylock = false;
+  failed |= require(qualify_direct_route(&route) == ROUTE_BUDDY_UNKNOWN,
+                    "free trylock failure must terminate direct-PCP proof");
+  route.free_trylock = true;
+  route.first_alloc_trylock = false;
+  failed |= require(qualify_direct_route(&route) == ROUTE_BUDDY_UNKNOWN,
+                    "allocation trylock failure must terminate direct proof");
+  route.first_alloc_trylock = true;
+  route.old_count = 1924;
+  failed |= require(qualify_direct_route(&route) == ROUTE_BULK_UNKNOWN,
+                    "count+4 equal to high must be bulk/unknown");
+  route.old_count = 1802;
+  route.alloc_cpu = 1;
+  failed |= require(qualify_direct_route(&route) == ROUTE_DIRECT_MISS,
+                    "different CPU must be a direct-PCP miss");
+  route.alloc_cpu = 0;
+  route.free_type = movable;
+  failed |= require(qualify_direct_route(&route) == ROUTE_DIRECT_MISS,
+                    "MOVABLE target must miss UNMOVABLE PCP lookup");
+
   if (failed) return 1;
   puts("PASS: V643 io_uring/PCP model: two order-2 UNMOVABLE allocations; "
-       "empty-list refill=15 at batch=63; direct capture is conditional "
-       "on same zone/CPU/type, count+4<high, and at most one newer exact-list free");
+       "NORMAL is empty so mm/io both use DMA32; checked affinity proves the "
+       "same orchestrator CPU; direct capture still requires UNMOVABLE, "
+       "successful PCP trylocks, count+4<high, and <=1 newer exact-list free");
   return 0;
 }
