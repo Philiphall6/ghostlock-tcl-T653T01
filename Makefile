@@ -15,7 +15,7 @@ LDFLAGS := -static -pthread
 
 .PHONY: all clean profile-guard-test tcl-v643-stack-geometry-test \
 	tcl-v643-pselect-semantics-test tcl-v643-runtime-offsets-test \
-	tcl-v643-slub-reclaim-model-test
+	tcl-v643-slub-reclaim-model-test tcl-v643-io-uring-pcp-model-test
 
 all: ghostlock
 
@@ -55,3 +55,9 @@ tcl-v643-runtime-offsets-test:
 tcl-v643-slub-reclaim-model-test:
 	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_slub_reclaim_model.c -o /tmp/tcl-v643-slub-reclaim-model
 	/tmp/tcl-v643-slub-reclaim-model
+
+# Host-only state model of the exact V643 io_uring order/migratetype and PCP
+# LIFO conditions.  It does not issue io_uring syscalls or touch the TV.
+tcl-v643-io-uring-pcp-model-test:
+	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_io_uring_pcp_model.c -o /tmp/tcl-v643-io-uring-pcp-model
+	/tmp/tcl-v643-io-uring-pcp-model
