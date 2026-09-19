@@ -15,6 +15,7 @@ LDFLAGS := -static -pthread
 
 .PHONY: all clean profile-guard-test tcl-v643-stack-geometry-test \
 	tcl-v643-syscall-stack-model-test \
+	tcl-v643-pi-blocked-on-model-test \
 	tcl-v643-pselect-semantics-test tcl-v643-runtime-offsets-test \
 	tcl-v643-slub-reclaim-model-test tcl-v643-io-uring-pcp-model-test
 
@@ -44,6 +45,12 @@ tcl-v643-stack-geometry-test:
 tcl-v643-syscall-stack-model-test:
 	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_syscall_stack_model.c -o /tmp/tcl-v643-syscall-stack-model
 	/tmp/tcl-v643-syscall-stack-model
+
+# Host-only state model of the vulnerable V643 proxy-lock rollback.  It
+# contains no futex syscall, timing choreography, reclaim or kernel address.
+tcl-v643-pi-blocked-on-model-test:
+	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_pi_blocked_on_model.c -o /tmp/tcl-v643-pi-blocked-on-model
+	/tmp/tcl-v643-pi-blocked-on-model
 
 # Host-only Linux semantics check for the proposed exceptfds carrier.  No
 # vulnerable futex operation or kernel address is used.

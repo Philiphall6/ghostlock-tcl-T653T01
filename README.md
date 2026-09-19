@@ -15,6 +15,13 @@ configuration leaves that static key disabled, preserving the futex/pselect
 `+0x30` coordinate. This arithmetic result does not validate the vulnerable
 futex transition or make the TCL profile runnable.
 
+The host-only `tcl-v643-pi-blocked-on-model-test` records a separate static
+finding from the exact V643 disassembly: the post-enqueue rollback clears
+`current+0x910` while the proxy waiter was armed at `waiter->task+0x910`.
+The upstream Android fix confirms this task mismatch. The test issues no
+syscall and does not prove that the current TCL choreography reaches the
+required post-enqueue `-EDEADLK`, signal timing, PI walk or reclaim.
+
 Root exploit for **Chromecast with Google TV** (sabrina) via [CVE-2026-43499](https://nvd.nist.gov/vuln/detail/CVE-2026-43499) -- a use-after-free in the Linux kernel's futex PI (priority inheritance) subsystem.
 
 Achieves root on a **locked bootloader** device running Android 14 with kernel 5.15.170 (PGO+BOLT+LTO, clang 17).
