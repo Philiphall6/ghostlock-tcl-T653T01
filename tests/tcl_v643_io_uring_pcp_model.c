@@ -20,6 +20,7 @@ struct pcp_list {
   unsigned count;
 };
 
+/* One instance represents one (zone, CPU) PCP pair. */
 struct pcp_cpu {
   struct pcp_list lists[MODEL_ORDERS][MODEL_TYPES];
   unsigned count;
@@ -164,6 +165,16 @@ int main(void) {
   failed |= require(pcp_direct_alloc(&cpus[0], order, unmovable) == PAGE_NONE,
                     "allocation on another CPU consumed target PCP list");
 
+  /* PCP pagesets are also per zone.  An allocation served from a different
+   * zone cannot see the target even on the same CPU. */
+  struct pcp_cpu zones[2] = {
+    {.count = 100, .high = 256},
+    {.count = 100, .high = 256},
+  };
+  pcp_free(&zones[1], order, unmovable, PAGE_TARGET);
+  failed |= require(pcp_direct_alloc(&zones[0], order, unmovable) == PAGE_NONE,
+                    "allocation from another zone consumed target PCP list");
+
   /* At equality the V643 branch enters free_pcppages_bulk().  The direct
    * LIFO proof must stop here because the target can leave the PCP list. */
   struct pcp_cpu at_high = {.count = 1924, .high = 1928};
@@ -174,6 +185,6 @@ int main(void) {
   if (failed) return 1;
   puts("PASS: V643 io_uring/PCP model: two order-2 UNMOVABLE allocations; "
        "empty-list refill=15 at batch=63; direct capture is conditional "
-       "on same CPU/type, count+4<high, and at most one newer exact-list free");
+       "on same zone/CPU/type, count+4<high, and at most one newer exact-list free");
   return 0;
 }
