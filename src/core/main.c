@@ -73,6 +73,8 @@ static int print_profile_info(const char *release_override) {
          (unsigned long long)profile->vmemmap_start);
   printf("mm_struct_size=%u\n", profile->mm_struct_size);
   printf("mm_slab_order=%u\n", profile->mm_slab_order);
+  printf("slub_min_partial=%u\n", profile->slub_min_partial);
+  printf("slub_cpu_partial=%u\n", profile->slub_cpu_partial);
   printf("kernel_phys_load=0x%016llx\n",
          (unsigned long long)profile->kernel_phys_load);
   printf("primitive_arming=%s\n",

@@ -14,7 +14,8 @@ CFLAGS := -O2 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function
 LDFLAGS := -static -pthread
 
 .PHONY: all clean profile-guard-test tcl-v643-stack-geometry-test \
-	tcl-v643-pselect-semantics-test tcl-v643-runtime-offsets-test
+	tcl-v643-pselect-semantics-test tcl-v643-runtime-offsets-test \
+	tcl-v643-slub-reclaim-model-test
 
 all: ghostlock
 
@@ -47,3 +48,10 @@ tcl-v643-pselect-semantics-test:
 tcl-v643-runtime-offsets-test:
 	$(CC) -O2 -Wall -Isrc/core -Isrc/devices tests/tcl_v643_runtime_offsets.c -o /tmp/tcl-v643-runtime-offsets
 	/tmp/tcl-v643-runtime-offsets
+
+# Host-only state model of the exact V643 SLUB thresholds.  It proves the
+# required batching bounds but does not allocate kernel objects or exercise
+# the vulnerability.
+tcl-v643-slub-reclaim-model-test:
+	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_slub_reclaim_model.c -o /tmp/tcl-v643-slub-reclaim-model
+	/tmp/tcl-v643-slub-reclaim-model

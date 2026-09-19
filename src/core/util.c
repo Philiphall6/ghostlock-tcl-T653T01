@@ -1348,9 +1348,10 @@ uintptr_t prepare_kernel_page(int payload_mode) {
    *    returned to the page allocator.
    *  - subsequent frees into it: FREE_FROZEN, no list activity.
    *  - discard ONLY happens in __unfreeze_partials (runs when a
-   *    put_cpu_partial(drain=1) overflows: accumulated pobjects > 13)
+   *    put_cpu_partial(drain=1) overflows: accumulated pobjects exceeds
+   *    the cache's cpu_partial threshold)
    *    and only for batch pages with inuse == 0 while the node's
-   *    nr_partial >= min_partial (5).
+   *    nr_partial >= the cache's min_partial threshold.
    *  - a page emptied while it sits on the NODE partial list takes the
    *    direct slab_empty path in __slab_free (synchronous
    *    discard_slab -> __free_pages -> PCP) whenever nr_partial >= 5.
@@ -1376,11 +1377,10 @@ uintptr_t prepare_kernel_page(int payload_mode) {
    *     partial list yet), so no background mm allocation can take it
    *     while it still has 15 free objects. Its last free only sets
    *     inuse = 0 (__slab_free returns early on the was_frozen path).
-   *  4. DRAIN kills: one prepare child per full prepare slab
-   *     (DRAIN_KILLS, default 24). Each first free into a full page
-   *     pushes +1 pobject; when the accumulated pobjects exceed
-   *     cpu_partial (13) the __unfreeze_partials drain runs, growing the
-   *     node nr_partial past min_partial (5) with the inuse > 0 batch
+   *  4. DRAIN kills: one prepare child per full prepare slab. Each first
+   *     free into a full page pushes +1 pobject; when the accumulated
+   *     pobjects exceed cpu_partial the __unfreeze_partials drain runs,
+   *     growing node nr_partial past min_partial with the inuse > 0 batch
    *     pages and DISCARDING the inuse == 0 target page:
    *     discard_slab -> __free_pages -> TOP of CORE's order-2 PCP.
    *  The io_uring spray right below then allocates rings+SQE pages
@@ -1404,10 +1404,10 @@ uintptr_t prepare_kernel_page(int payload_mode) {
    * on CORE before the next syscall we make. (Closing the fds after the
    * reclaim - or not killing the children - leaves every mm allocated and
    * the page can never be discarded.) */
-  /* FLUSH victims: one object of each of 16 distinct FULL prepare slabs.
-   * Closing their mem fds below pushes +1 pobject each, which FORCES a
-   * CPU-partial overflow at the very start of the choreography. Without
-   * this, a leftover accumulator (pobjects already > 13 from background
+  /* Reference-route FLUSH victims: one object from each selected full
+   * prepare slab. The TCL host model deliberately uses 16 ballast slabs;
+   * this executable route remains blocked for TCL. Without a phase-aware
+   * batch, a leftover accumulator from background
    * process exits on CORE) makes the TARGET's first free unfreeze it
    * straight onto the NODE partial list, where any CPU's get_partial can
    * hand it to a background fork for the rest of the choreography - the
@@ -1446,20 +1446,20 @@ uintptr_t prepare_kernel_page(int payload_mode) {
    * Each close() of a dead child's mem fd drops the last mm_count ref
    * (mem_release -> mmdrop): the mm free runs in this task's task_work,
    * on CORE, before the next syscall. Order matters:
-   *   0. FLUSH: close the 16 flush mem fds -> 16 CPU-partial pushes -> a
-   *      guaranteed overflow that resets the accumulator, so nothing can
-   *      unfreeze the target early.
+   *   0. FLUSH: close the reference-tuned flush mem fds to perturb the
+   *      CPU-partial phase. This is not treated as a TCL proof.
    *   1. close the pre mem fds: the target page takes its first free and
    *      FREEZES onto CORE's (fresh) CPU partial list (head pobjects ~3).
    *   2. close the post mem fds: the target empties further (head ~4-6).
    *   3. close the leak mem fd: the target page is now inuse == 0 but
    *      still FROZEN (private to CORE, invisible to every other CPU).
-   *      The head pobjects is ~4-6, FAR below the 13 overflow threshold:
+   *      The head pobjects is expected below the reference threshold:
    *      nothing can unfreeze the half-empty target onto the node partial
    *      list, where a background fork would capture it.
    *   4. drain: close one prepare mem fd per full prepare slab (one
    *      first-free = +1 pobject) and try one order-2 reclaim, 24 times.
-   *      At pobjects > 13 the __unfreeze_partials drain runs and DISCARDS
+   *      Once pobjects exceeds cpu_partial, __unfreeze_partials runs and
+   *      discards
    *      the inuse == 0 target page (processed last: it is the oldest page
    *      in the batch, after the inuse > 0 pages have grown the node
    *      nr_partial past min_partial) -> top of CORE's order-2 PCP; the

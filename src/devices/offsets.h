@@ -39,6 +39,8 @@ struct kernel_offsets {
   uint64_t kernelsnitch_identity_start, kernelsnitch_identity_end;
   uint32_t mm_struct_size;
   uint32_t mm_slab_order;
+  uint32_t slub_min_partial;
+  uint32_t slub_cpu_partial;
   uint64_t off_init_task, off_init_cred, off_init_uts_ns, off_empty_zero_page;
   uint64_t off_root_task_group, off_selinux_enforcing, off_kptr_restrict;
   uint64_t off_selinux_blob_sizes, off_security_hook_heads, off_kmalloc_caches;

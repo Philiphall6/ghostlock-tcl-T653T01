@@ -30,6 +30,9 @@ int main(void) {
   failed |= require(active_offsets->reclaim_route ==
                         GHOST_RECLAIM_TCL_V643_UNPROVEN,
                     "effective TCL reclaim route is not blocked");
+  failed |= require(active_offsets->slub_min_partial == 5 &&
+                    active_offsets->slub_cpu_partial == 6,
+                    "effective TCL SLUB thresholds are not exact V643 values");
 
   failed |= require(P0_PAGE_OFFSET == UINT64_C(0xffffff8000000000),
                     "effective PAGE_OFFSET is not V643");

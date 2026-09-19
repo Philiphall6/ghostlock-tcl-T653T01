@@ -31,6 +31,9 @@ OFFSETS_ENTRY("5.15.180-android14-11",
   /* Exact live slabinfo/zoneinfo geometry. */
   .mm_struct_size = 1024,
   .mm_slab_order = 2,
+  /* Exact __kmem_cache_create decisions for s->size == 1024. */
+  .slub_min_partial = 5,
+  .slub_cpu_partial = 6,
   .kimage_text_base = 0xffffffc008000000ULL,
 
   .off_init_task = 0x028028c0ULL,

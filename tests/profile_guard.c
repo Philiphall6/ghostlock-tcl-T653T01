@@ -53,6 +53,9 @@ int main(void) {
                     "KernelSnitch scan must match TCL live RAM aliases");
   failed |= require(tcl->mm_struct_size == 1024 && tcl->mm_slab_order == 2,
                     "TCL mm_struct slab geometry changed unexpectedly");
+  failed |= require(tcl->slub_min_partial == 5 &&
+                    tcl->slub_cpu_partial == 6,
+                    "TCL exact SLUB partial thresholds changed unexpectedly");
   failed |= require(tcl->kimage_text_base == 0xffffffc008000000ULL,
                     "TCL link-time text base changed unexpectedly");
   failed |= require(tcl->task_pi_blocked_on == 0x910,
