@@ -42,6 +42,16 @@
 #define TCL_V643_MIGRATE_MOVABLE                   1U
 #define TCL_V643_MIGRATE_RECLAIMABLE               2U
 
+/* The exact V643 move_freepages_block() masks the PFN with ~0x3ff and
+ * steal_suitable_fallback() compares the compatible/free population against
+ * 0x1ff.  Consequently a pageblock is 2^10 base pages and the retag threshold
+ * is 512 pages.  These constants only feed the offline allocator model. */
+#define TCL_V643_PAGEBLOCK_ORDER                   10U
+#define TCL_V643_PAGEBLOCK_PAGES \
+  (1U << TCL_V643_PAGEBLOCK_ORDER)
+#define TCL_V643_PAGEBLOCK_RETAG_THRESHOLD \
+  (1U << (TCL_V643_PAGEBLOCK_ORDER - 1U))
+
 /* free_unref_page_commit() and get_populated_pcp_list() both select the
  * V643 PCP list with migratetype + order * 4 for orders 0..3. */
 #define TCL_V643_PCP_ORDER_MAX                     3U

@@ -6,7 +6,7 @@
 #define MODEL_CPUS 2
 #define MODEL_ORDERS 4
 #define MODEL_TYPES 3
-#define MODEL_DEPTH 16
+#define MODEL_DEPTH 32
 
 enum page_id {
   PAGE_NONE = 0,
@@ -116,6 +116,63 @@ static unsigned get_order(unsigned bytes) {
   return order;
 }
 
+/* Exact V643/Android 5.15 pageblock result after an allocation falls back
+ * from the requested freelist.  free_unref_page_prepare() later ignores the
+ * allocation request and reads this actual pageblock type.  The model omits
+ * HIGHATOMIC/CMA/ISOLATE because the two GFP masks under study do not select
+ * those allocation routes. */
+static unsigned fallback_pageblock_type(unsigned old_type,
+                                        unsigned requested_type,
+                                        unsigned current_order,
+                                        unsigned free_pages,
+                                        unsigned movable_pages,
+                                        bool whole_block,
+                                        bool mobility_grouping_disabled) {
+  if (old_type == requested_type)
+    return requested_type;
+
+  /* A buddy block at least as large as a pageblock is claimed outright. */
+  if (current_order >= TCL_V643_PAGEBLOCK_ORDER)
+    return requested_type;
+
+  /* For UNMOVABLE the exact can_steal_fallback() returns true, but retain
+   * this argument so the test also covers the single-page fallback branch. */
+  if (!whole_block || !free_pages)
+    return old_type;
+
+  unsigned alike_pages = 0;
+  if (requested_type == TCL_V643_MIGRATE_MOVABLE) {
+    alike_pages = movable_pages;
+  } else if (old_type == TCL_V643_MIGRATE_MOVABLE &&
+             free_pages + movable_pages <= TCL_V643_PAGEBLOCK_PAGES) {
+    alike_pages = TCL_V643_PAGEBLOCK_PAGES -
+                  (free_pages + movable_pages);
+  }
+
+  if (mobility_grouping_disabled ||
+      free_pages + alike_pages >= TCL_V643_PAGEBLOCK_RETAG_THRESHOLD)
+    return requested_type;
+  return old_type;
+}
+
+/* free_pcppages_bulk() removes list_last_entry(), whereas the target was
+ * inserted by list_add() at the head.  This conditional submodel proves that
+ * a partial bulk drain consumes older entries first; the live number of older
+ * entries and the round-robin share remain dynamic on TCL. */
+static unsigned pcp_bulk_drain_exact_tail(struct pcp_cpu *pcp, unsigned order,
+                                          unsigned migratetype,
+                                          unsigned base_pages) {
+  struct pcp_list *list = &pcp->lists[order][migratetype];
+  unsigned drained = 0;
+  unsigned page_cost = 1U << order;
+  while (list->count && drained < base_pages) {
+    list->count--;
+    pcp->count -= page_cost;
+    drained += page_cost;
+  }
+  return drained;
+}
+
 /* Both callers request ZONE_NORMAL.  The exact TCL snapshot has no managed
  * NORMAL pages and one NUMA node, so the first usable lower zone is DMA32.
  * This models only that proved V643 topology, not a generic Linux zonelist. */
@@ -191,6 +248,43 @@ int main(void) {
                     "V643 PCP list index formula mismatch");
   failed |= require(refill_batch(63, order) == 15,
                     "V643 snapshot batch must refill 15 order-2 pages");
+  failed |= require(TCL_V643_PAGEBLOCK_PAGES == 1024 &&
+                    TCL_V643_PAGEBLOCK_RETAG_THRESHOLD == 512,
+                    "unexpected V643 pageblock geometry");
+
+  /* UNMOVABLE fallback always allows the whole-block stealing heuristic.
+   * A large source buddy block is retagged outright.  For an order-2 source
+   * in a MOVABLE pageblock, the exact half-pageblock test simplifies to
+   * movable_pages <= 512; 513 movable pages leave the block MOVABLE. */
+  failed |= require(fallback_pageblock_type(
+                        movable, unmovable, TCL_V643_PAGEBLOCK_ORDER,
+                        0, 1024, true, false) == unmovable,
+                    "pageblock-sized fallback was not claimed outright");
+  failed |= require(fallback_pageblock_type(
+                        movable, unmovable, order,
+                        100, 512, true, false) == unmovable,
+                    "MOVABLE fallback boundary should retag UNMOVABLE");
+  failed |= require(fallback_pageblock_type(
+                        movable, unmovable, order,
+                        100, 513, true, false) == movable,
+                    "513 movable pages should preserve MOVABLE pageblock");
+  failed |= require(fallback_pageblock_type(
+                        TCL_V643_MIGRATE_RECLAIMABLE, unmovable, order,
+                        511, 0, true, false) ==
+                        TCL_V643_MIGRATE_RECLAIMABLE,
+                    "511 free RECLAIMABLE pages should not retag block");
+  failed |= require(fallback_pageblock_type(
+                        TCL_V643_MIGRATE_RECLAIMABLE, unmovable, order,
+                        512, 0, true, false) == unmovable,
+                    "512 free RECLAIMABLE pages should retag block");
+  failed |= require(fallback_pageblock_type(
+                        movable, unmovable, order,
+                        1, 1023, false, false) == movable,
+                    "single-page fallback unexpectedly retagged block");
+  failed |= require(fallback_pageblock_type(
+                        movable, unmovable, order,
+                        1, 1023, true, true) == unmovable,
+                    "disabled mobility grouping must claim fallback block");
 
   /* Archived read-only zoneinfo snapshot: count=1802, high=1928.  With no
    * intervening same-list free, the discarded UNMOVABLE target is the head
@@ -261,6 +355,28 @@ int main(void) {
                     at_high.bulk_path,
                     "count + four equal to high must enter bulk path");
 
+  /* The target is newest.  Sixteen older order-2 entries satisfy a 63-base-
+   * page partial drain (rounded to 64 by order granularity) without removing
+   * it.  With no older exact-list entry, the same list-local drain removes the
+   * target.  Real free_pcppages_bulk() distributes its budget round-robin, so
+   * these are conditional bounds rather than a live-state claim. */
+  struct pcp_cpu bulk_old_tail = {.count = 64, .high = 1928};
+  for (unsigned i = 0; i < 16; i++)
+    pcp_free(&bulk_old_tail, order, unmovable, PAGE_DECOY_A);
+  pcp_free(&bulk_old_tail, order, unmovable, PAGE_TARGET);
+  failed |= require(pcp_bulk_drain_exact_tail(
+                        &bulk_old_tail, order, unmovable, 63) == 64 &&
+                    pcp_direct_alloc(&bulk_old_tail, order, unmovable) ==
+                        PAGE_TARGET,
+                    "partial bulk drain did not preserve newest target");
+
+  struct pcp_cpu bulk_target_only = {.count = 0, .high = 1928};
+  pcp_free(&bulk_target_only, order, unmovable, PAGE_TARGET);
+  pcp_bulk_drain_exact_tail(&bulk_target_only, order, unmovable, 4);
+  failed |= require(pcp_direct_alloc(&bulk_target_only, order, unmovable) ==
+                        PAGE_NONE,
+                    "target-only exact list unexpectedly survived drain");
+
   /* The current implementation pins the orchestrator before copy_mm, the
    * memfd close/task-work free and io_uring setup.  Model that proved same-CPU
    * case separately from the still-dynamic lock/count/interference inputs. */
@@ -314,8 +430,9 @@ int main(void) {
   if (failed) return 1;
   puts("PASS: V643 io_uring/PCP model: two order-2 UNMOVABLE allocations; "
        "NORMAL is empty so mm/io both use DMA32; checked affinity proves the "
-       "same orchestrator CPU; direct capture still requires UNMOVABLE, "
-       "successful PCP trylocks, inactive zone reclaim, count+4<high, and "
-       "<=1 newer exact-list free");
+       "same orchestrator CPU; pageblock fallback retag boundary is modeled; "
+       "partial bulk removes the old tail first; direct capture still "
+       "requires actual UNMOVABLE, successful PCP trylocks, known bulk/list "
+       "state, and <=1 newer exact-list free");
   return 0;
 }
