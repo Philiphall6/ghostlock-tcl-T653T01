@@ -103,6 +103,12 @@ int main(void) {
   failed |= require(get_order(TCL_V643_IO_URING_RINGS_BYTES) == 2 &&
                     get_order(TCL_V643_IO_URING_SQES_BYTES) == 2,
                     "both V643 io_uring allocations must be order 2");
+  failed |= require(TCL_V643_IO_URING_RINGS_BYTES <=
+                        TCL_V643_IO_URING_MAP_BYTES &&
+                    TCL_V643_IO_URING_SQES_BYTES <=
+                        TCL_V643_IO_URING_MAP_BYTES &&
+                    TCL_V643_IO_URING_MAP_BYTES == (4096U << order),
+                    "16K mmap must cover both order-2 backing pages");
   failed |= require((TCL_V643_IO_URING_GFP &
                     (TCL_V643_GFP_MOVABLE |
                      TCL_V643_GFP_RECLAIMABLE)) == 0,
