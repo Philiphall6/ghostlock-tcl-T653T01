@@ -22,6 +22,15 @@ The upstream Android fix confirms this task mismatch. The test issues no
 syscall and does not prove that the current TCL choreography reaches the
 required post-enqueue `-EDEADLK`, signal timing, PI walk or reclaim.
 
+The trigger now also refuses `CMP_REQUEUE_PI` until the contending owner has
+published `FUTEX_WAITERS` on the chain lock. This closes the former fixed-delay
+race and makes the intended proxy -> target owner -> proxy cycle explicit in
+the host model. The TCL carrier now creates a fresh `pselect6` frame for each
+pending write round (up to the 7/14/19 nice ladder), with a host-only control
+model covering three writes. These are offline structural completions only:
+the TCL profile remains analysis-only and the live PI walk/reclaim path has
+not been executed.
+
 Root exploit for **Chromecast with Google TV** (sabrina) via [CVE-2026-43499](https://nvd.nist.gov/vuln/detail/CVE-2026-43499) -- a use-after-free in the Linux kernel's futex PI (priority inheritance) subsystem.
 
 Achieves root on a **locked bootloader** device running Android 14 with kernel 5.15.170 (PGO+BOLT+LTO, clang 17).

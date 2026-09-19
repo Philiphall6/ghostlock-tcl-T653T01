@@ -139,6 +139,7 @@ uint32_t f_pi_chain;
 atomic_int waiter_ready;
 atomic_int waiter_waiting;
 atomic_int owner_started;
+atomic_int owner_chain_entered;
 atomic_int owner_chain_done;
 atomic_int route_done;
 atomic_int waiter_tid;
@@ -226,6 +227,7 @@ void *owner_thread(void *arg __attribute__((unused))) {
   if (lock_target != 0) pr_error("owner lock target errno=%d\n", errno);
   while (!atomic_load(&waiter_ready)) usleep(1000);
   atomic_store(&owner_started, 1);
+  atomic_store(&owner_chain_entered, 1);
   futex_op(&f_pi_chain, FUTEX_LOCK_PI, 0, NULL, NULL, 0);
   atomic_store(&owner_chain_done, 1);
   for (;;) sleep(1);
@@ -523,7 +525,8 @@ void *consumer_thread(void *arg __attribute__((unused))) {
 void reset_main_route_state(void) {
   f_wait = 0; f_pi_target = 0; f_pi_chain = 0;
   atomic_store(&waiter_ready, 0); atomic_store(&waiter_waiting, 0);
-  atomic_store(&owner_started, 0); atomic_store(&owner_chain_done, 0);
+  atomic_store(&owner_started, 0); atomic_store(&owner_chain_entered, 0);
+  atomic_store(&owner_chain_done, 0);
   atomic_store(&route_done, 0); atomic_store(&waiter_tid, 0);
   atomic_store(&punch_consume_go, 0); atomic_store(&punch_consume_stop, 0);
   atomic_store(&consumer_calls, 0); atomic_store(&consumer_success, 0);
@@ -557,8 +560,36 @@ void run_main_route_threads(void) {
   SYSCHK(pthread_create(&waiter, NULL, waiter_thread, NULL));
   SYSCHK(pthread_create(&owner, NULL, owner_thread, NULL));
   SYSCHK(pthread_create(&consumer, NULL, consumer_thread, NULL));
-  while (!atomic_load(&waiter_waiting) || !atomic_load(&owner_started))
+  while (!atomic_load(&waiter_waiting) ||
+         !atomic_load(&owner_chain_entered))
     usleep(1000);
+
+  /* owner_started used to be followed only by a fixed 50 ms delay.  That
+   * left a real scheduling race: CMP_REQUEUE_PI could run before the owner
+   * was enqueued on f_pi_chain, in which case the post-enqueue chain walk
+   * had no cycle to detect.  FUTEX_LOCK_PI publishes FUTEX_WAITERS in the
+   * user word after the contending owner is queued.  Require that observable
+   * state before requeueing the proxy waiter.  The waiter-side queue has no
+   * equivalent user-word bit, so retain a short settle after this proof. */
+  {
+    struct timespec start, now;
+    int chain_queued = 0;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    do {
+      uint32_t chain_word = __atomic_load_n(&f_pi_chain, __ATOMIC_ACQUIRE);
+      if (chain_word & FUTEX_WAITERS) {
+        chain_queued = 1;
+        break;
+      }
+      usleep(1000);
+      clock_gettime(CLOCK_MONOTONIC, &now);
+    } while ((now.tv_sec - start.tv_sec) < 2);
+
+    if (!chain_queued) {
+      pr_error("owner was not queued on f_pi_chain; refusing CMP_REQUEUE_PI\n");
+      return;
+    }
+  }
   usleep(50000);
   errno = 0;
   {

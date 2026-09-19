@@ -312,6 +312,7 @@ extern uint32_t f_pi_chain;
 extern atomic_int waiter_ready;
 extern atomic_int waiter_waiting;
 extern atomic_int owner_started;
+extern atomic_int owner_chain_entered;
 extern atomic_int owner_chain_done;
 extern atomic_int route_done;
 extern atomic_int waiter_tid;

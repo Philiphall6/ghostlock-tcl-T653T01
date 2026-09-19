@@ -22,6 +22,10 @@ struct model_waiter {
   uintptr_t lock;
 };
 
+struct model_lock {
+  struct model_task *owner;
+};
+
 static int require(bool condition, const char *message) {
   if (condition) return 0;
   fprintf(stderr, "FAIL: %s\n", message);
@@ -34,6 +38,23 @@ static int model_task_blocks_then_chain_deadlock(struct model_task *proxy,
                                                  struct model_waiter *waiter) {
   proxy->pi_blocked_on = (uintptr_t)waiter;
   return -EDEADLK;
+}
+
+/* Models only the ownership graph established by main.c before the requeue:
+ * proxy owns chain; owner owns target and is blocked on chain.  Requeueing
+ * proxy onto target must therefore detect proxy -> owner -> proxy, and the
+ * target owner differs from proxy so this is not the pre-enqueue fast path. */
+static bool model_post_enqueue_cycle(const struct model_task *proxy,
+                                     const struct model_task *owner,
+                                     const struct model_lock *target,
+                                     const struct model_lock *chain,
+                                     const struct model_waiter *owner_waiter) {
+  if (target->owner == proxy) return false;
+  if (target->owner != owner) return false;
+  if (owner_waiter->task != owner) return false;
+  if (owner->pi_blocked_on != (uintptr_t)owner_waiter) return false;
+  if (owner_waiter->lock != (uintptr_t)chain) return false;
+  return chain->owner == proxy;
 }
 
 /* Vulnerable V643 behavior: remove_waiter() obtains current via sp_el0 and
@@ -74,9 +95,16 @@ int main(void) {
   const struct kernel_offsets *tcl = find_v643();
   struct model_task requeuer = {0};
   struct model_task proxy = {0};
+  struct model_task owner = {0};
+  struct model_lock chain = {.owner = &proxy};
+  struct model_lock target = {.owner = &owner};
+  struct model_waiter owner_waiter = {
+      .task = &owner,
+      .lock = (uintptr_t)&chain,
+  };
   struct model_waiter stack_waiter = {
       .task = &proxy,
-      .lock = 0x1234,
+      .lock = (uintptr_t)&target,
   };
   enum requeue_pi_state state = Q_REQUEUE_PI_IN_PROGRESS;
 
@@ -87,6 +115,13 @@ int main(void) {
   failed |= require(tcl->waiter_task == 0x30 &&
                         tcl->waiter_lock == 0x38,
                     "V643 waiter task/lock offsets changed");
+
+  owner.pi_blocked_on = (uintptr_t)&owner_waiter;
+  failed |= require(target.owner != &proxy,
+                    "model accidentally selects pre-enqueue self-deadlock");
+  failed |= require(model_post_enqueue_cycle(
+                        &proxy, &owner, &target, &chain, &owner_waiter),
+                    "proxy/owner ownership graph does not close after enqueue");
 
   int ret = model_task_blocks_then_chain_deadlock(&proxy, &stack_waiter);
   failed |= require(ret == -EDEADLK,
@@ -109,6 +144,7 @@ int main(void) {
 
   if (failed) return 1;
   puts("V643 exact offsets: task.pi_blocked_on=0x910 waiter.task=0x30 waiter.lock=0x38");
+  puts("cycle topology: proxy owns chain; target owner blocks on chain; requeue closes cycle post-enqueue");
   puts("vulnerable rollback: current cleared, proxy pointer retained, state 2 -> 0");
   puts("fixed rollback: waiter->task pointer cleared");
   puts("PASS: host-only V643 pi_blocked_on rollback model");

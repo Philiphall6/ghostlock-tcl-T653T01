@@ -16,6 +16,7 @@ LDFLAGS := -static -pthread
 .PHONY: all clean profile-guard-test tcl-v643-stack-geometry-test \
 	tcl-v643-syscall-stack-model-test \
 	tcl-v643-pi-blocked-on-model-test \
+	tcl-v643-pselect-rounds-model-test \
 	tcl-v643-pselect-semantics-test tcl-v643-runtime-offsets-test \
 	tcl-v643-slub-reclaim-model-test tcl-v643-io-uring-pcp-model-test
 
@@ -51,6 +52,12 @@ tcl-v643-syscall-stack-model-test:
 tcl-v643-pi-blocked-on-model-test:
 	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_pi_blocked_on_model.c -o /tmp/tcl-v643-pi-blocked-on-model
 	/tmp/tcl-v643-pi-blocked-on-model
+
+# Host-only control-flow model for the TCL carrier's one-write-per-pselect
+# retry loop. It issues no syscall and does not build the exploit.
+tcl-v643-pselect-rounds-model-test:
+	$(CC) -O2 -Wall tests/tcl_v643_pselect_rounds_model.c -o /tmp/tcl-v643-pselect-rounds-model
+	/tmp/tcl-v643-pselect-rounds-model
 
 # Host-only Linux semantics check for the proposed exceptfds carrier.  No
 # vulnerable futex operation or kernel address is used.
