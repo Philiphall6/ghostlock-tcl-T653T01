@@ -4,8 +4,16 @@
 > offline-only, non-runnable port. It remains guarded by `analysis_only=1`,
 > `kernel_phys_load=0` and `reclaim_route=tcl-v643-unproven`. Do not use the
 > deployment commands below on the TCL TV. `--profile-info
-> 5.15.180-android14-11` is the only TCL-oriented validation performed, under
-> QEMU user mode and never on the television.
+> 5.15.180-android14-11` remains QEMU-only. The only TCL-side executable test
+> was the separate, non-vulnerable `tcl_v643_pselect_semantics.c` carrier
+> diagnostic; it contains no futex PI, reclaim or kernel address and passed
+> 11/11 before being removed from the television.
+
+The host-only target `tcl-v643-syscall-stack-model-test` models the exact V643
+entry frames and the dormant random-kstack alternative. The stock V643 live
+configuration leaves that static key disabled, preserving the futex/pselect
+`+0x30` coordinate. This arithmetic result does not validate the vulnerable
+futex transition or make the TCL profile runnable.
 
 Root exploit for **Chromecast with Google TV** (sabrina) via [CVE-2026-43499](https://nvd.nist.gov/vuln/detail/CVE-2026-43499) -- a use-after-free in the Linux kernel's futex PI (priority inheritance) subsystem.
 

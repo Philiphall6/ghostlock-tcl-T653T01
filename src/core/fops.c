@@ -429,8 +429,14 @@ static void readback_full_diff(void) {
  *      unwinds, the signal handler runs on the waiter in USERSPACE.
  *   4. handler: do_pselect_fake_lock_route() -> the profile-selected stack
  *      carrier. Sabrina uses SEQPACKET; TCL V643 has an exact pselect6
- *      stack_fds mapping. Every syscall re-enters the kernel at the SAME
- *      stack depth, so the selected frame lands at the dangling waiter.
+ *      stack_fds mapping. On the exact stock V643 boot, the compiled
+ *      random-kstack static key defaults off and no boot parameter enables
+ *      it. Every syscall therefore re-enters at the same kernel-stack
+ *      coordinate and the selected frame lands at the dangling waiter.
+ *      Signal delivery may overwrite the old waiter bytes first; that is
+ *      expected because pselect rewrites the complete field set used by the
+ *      later walk. Persistence of task->pi_blocked_on through this sequence
+ *      remains a dynamic precondition and is not asserted by this comment.
  *   5. consumer: sched_setattr(waiter_tid, nice ladder) -> the PI chain
  *      walk fires against the overlay while the handler is blocked in its
  *      carrier syscall -> the rb_erase write primitive -> task->cred/real_cred =

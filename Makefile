@@ -14,6 +14,7 @@ CFLAGS := -O2 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function
 LDFLAGS := -static -pthread
 
 .PHONY: all clean profile-guard-test tcl-v643-stack-geometry-test \
+	tcl-v643-syscall-stack-model-test \
 	tcl-v643-pselect-semantics-test tcl-v643-runtime-offsets-test \
 	tcl-v643-slub-reclaim-model-test tcl-v643-io-uring-pcp-model-test
 
@@ -36,6 +37,13 @@ profile-guard-test:
 tcl-v643-stack-geometry-test:
 	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_stack_geometry.c -o /tmp/tcl-v643-stack-geometry
 	/tmp/tcl-v643-stack-geometry
+
+# Host-only coordinate model for the exact V643 syscall entry, dormant
+# random-kstack alternative, signal delivery, stale waiter and pselect frame.
+# It performs no syscall and does not build the exploit implementation.
+tcl-v643-syscall-stack-model-test:
+	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_syscall_stack_model.c -o /tmp/tcl-v643-syscall-stack-model
+	/tmp/tcl-v643-syscall-stack-model
 
 # Host-only Linux semantics check for the proposed exceptfds carrier.  No
 # vulnerable futex operation or kernel address is used.

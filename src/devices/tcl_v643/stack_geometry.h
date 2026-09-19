@@ -14,7 +14,33 @@
  *
  * Consequently stack_fds starts at syscall SP - 0x200 and the stale
  * rt_mutex_waiter starts 0x30 bytes into stack_fds.
+ *
+ * The exact V643 entry path also has a compiled random-kstack alternative.
+ * The stock V643 configuration leaves its static key disabled and neither
+ * the live command line nor the extracted vendor bootconfig enables it.
+ * Keep the entry-frame and dormant-offset constants here so host tests catch
+ * any future assumption that the +0x30 alias is unconditional on every build.
  */
+#define TCL_V643_EL0_SVC_FRAME_SIZE           0x020U
+#define TCL_V643_DO_EL0_SVC_FRAME_SIZE        0x010U
+#define TCL_V643_EL0_SVC_COMMON_FRAME_SIZE    0x030U
+#define TCL_V643_INVOKE_SYSCALL_FRAME_SIZE    0x030U
+#define TCL_V643_SYSCALL_FROM_EL0_SP           0x090U
+
+/* invoke_syscall's dormant alternative rounds the masked low ten bits up to
+ * 16-byte alignment.  The resulting displacement is 0..0x400, not 0..0x7f0.
+ * It is inactive on the exact stock V643 boot documented in the audit. */
+#define TCL_V643_RANDOM_KSTACK_ALIGN           0x010U
+#define TCL_V643_RANDOM_KSTACK_MAX             0x400U
+#define TCL_V643_RANDOM_KSTACK_DEFAULT_ENABLED 0U
+
+/* Signal delivery happens after the syscall frames have unwound back to the
+ * el0_svc frame.  These are stack-depth landmarks, not a claim that the stale
+ * waiter contents survive: the pselect carrier deliberately replaces them. */
+#define TCL_V643_NOTIFY_FROM_EL0_SP            0x0e0U
+#define TCL_V643_GET_SIGNAL_FROM_EL0_SP        0x170U
+#define TCL_V643_HANDLE_SIGNAL_FROM_EL0_SP     0x1c0U
+
 #define TCL_V643_WAITER_FROM_SYSCALL_SP       0x1d0U
 #define TCL_V643_PSELECT_FRAME_SIZE           0x090U
 #define TCL_V643_CORE_SELECT_FRAME_SIZE       0x1c0U
