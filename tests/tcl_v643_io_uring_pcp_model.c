@@ -31,7 +31,9 @@ struct direct_route_conditions {
   unsigned alloc_type;
   unsigned old_count;
   unsigned high;
+  unsigned batch;
   unsigned newer_exact_list_frees;
+  bool zone_reclaim_active;
   bool free_trylock;
   bool first_alloc_trylock;
   bool second_alloc_trylock;
@@ -132,12 +134,15 @@ static unsigned v643_actual_kernel_zone(void) {
  * rings and SQE allocations consume only two entries. */
 static enum direct_route_result qualify_direct_route(
     const struct direct_route_conditions *c) {
+  unsigned effective_high = c->high;
+  if (c->zone_reclaim_active && (c->batch << 2) < effective_high)
+    effective_high = c->batch << 2;
   if (c->free_zone != c->alloc_zone || c->free_cpu != c->alloc_cpu ||
       c->free_type != c->alloc_type)
     return ROUTE_DIRECT_MISS;
   if (!c->free_trylock || c->vendor_bypass)
     return ROUTE_BUDDY_UNKNOWN;
-  if (c->old_count + (1U << TCL_V643_IO_URING_RINGS_ORDER) >= c->high)
+  if (c->old_count + (1U << TCL_V643_IO_URING_RINGS_ORDER) >= effective_high)
     return ROUTE_BULK_UNKNOWN;
   if (!c->first_alloc_trylock || !c->second_alloc_trylock)
     return ROUTE_BUDDY_UNKNOWN;
@@ -268,6 +273,7 @@ int main(void) {
     .alloc_type = unmovable,
     .old_count = 1802,
     .high = 1928,
+    .batch = 63,
     .free_trylock = true,
     .first_alloc_trylock = true,
     .second_alloc_trylock = true,
@@ -293,6 +299,10 @@ int main(void) {
   failed |= require(qualify_direct_route(&route) == ROUTE_BULK_UNKNOWN,
                     "count+4 equal to high must be bulk/unknown");
   route.old_count = 1802;
+  route.zone_reclaim_active = true;
+  failed |= require(qualify_direct_route(&route) == ROUTE_BULK_UNKNOWN,
+                    "active reclaim must cap effective high at batch*4");
+  route.zone_reclaim_active = false;
   route.alloc_cpu = 1;
   failed |= require(qualify_direct_route(&route) == ROUTE_DIRECT_MISS,
                     "different CPU must be a direct-PCP miss");
@@ -305,6 +315,7 @@ int main(void) {
   puts("PASS: V643 io_uring/PCP model: two order-2 UNMOVABLE allocations; "
        "NORMAL is empty so mm/io both use DMA32; checked affinity proves the "
        "same orchestrator CPU; direct capture still requires UNMOVABLE, "
-       "successful PCP trylocks, count+4<high, and <=1 newer exact-list free");
+       "successful PCP trylocks, inactive zone reclaim, count+4<high, and "
+       "<=1 newer exact-list free");
   return 0;
 }
