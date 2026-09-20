@@ -19,7 +19,8 @@ LDFLAGS := -static -pthread
 	tcl-v643-pselect-rounds-model-test \
 	tcl-v643-pselect-semantics-test tcl-v643-runtime-offsets-test \
 	tcl-v643-slub-reclaim-model-test tcl-v643-io-uring-pcp-model-test \
-	tcl-v643-compat-select-model-test
+	tcl-v643-compat-select-model-test tcl-v643-direct-primitive-model-test \
+	tcl-v643-kaslr-model-test
 
 all: ghostlock
 
@@ -90,3 +91,15 @@ tcl-v643-io-uring-pcp-model-test:
 tcl-v643-compat-select-model-test:
 	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_compat_select_model.c -o /tmp/tcl-v643-compat-select-model
 	/tmp/tcl-v643-compat-select-model
+
+# Host-only model of the exact V643 panic scratch, boot_id ctl_table data
+# pointer and rb_erase collateral store.  It performs no syscall.
+tcl-v643-direct-primitive-model-test:
+	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_direct_primitive_model.c -o /tmp/tcl-v643-direct-primitive-model
+	/tmp/tcl-v643-direct-primitive-model
+
+# Host-only coordinate proof for the 2 MiB-aligned V643 image slide and
+# first-block syscall entry text.  It opens no perf event.
+tcl-v643-kaslr-model-test:
+	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_kaslr_model.c -o /tmp/tcl-v643-kaslr-model
+	/tmp/tcl-v643-kaslr-model
