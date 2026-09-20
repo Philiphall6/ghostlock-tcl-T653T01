@@ -18,7 +18,8 @@ LDFLAGS := -static -pthread
 	tcl-v643-pi-blocked-on-model-test \
 	tcl-v643-pselect-rounds-model-test \
 	tcl-v643-pselect-semantics-test tcl-v643-runtime-offsets-test \
-	tcl-v643-slub-reclaim-model-test tcl-v643-io-uring-pcp-model-test
+	tcl-v643-slub-reclaim-model-test tcl-v643-io-uring-pcp-model-test \
+	tcl-v643-compat-select-model-test
 
 all: ghostlock
 
@@ -83,3 +84,9 @@ tcl-v643-slub-reclaim-model-test:
 tcl-v643-io-uring-pcp-model-test:
 	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_io_uring_pcp_model.c -o /tmp/tcl-v643-io-uring-pcp-model
 	/tmp/tcl-v643-io-uring-pcp-model
+
+# Host-only coordinate model for the ARM32 compat select route recovered from
+# the exact V643 image.  It issues no syscall and does not build the exploit.
+tcl-v643-compat-select-model-test:
+	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_compat_select_model.c -o /tmp/tcl-v643-compat-select-model
+	/tmp/tcl-v643-compat-select-model
