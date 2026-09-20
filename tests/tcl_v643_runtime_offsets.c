@@ -28,8 +28,8 @@ int main(void) {
   if (!active_offsets) return 1;
 
   failed |= require(active_offsets->reclaim_route ==
-                        GHOST_RECLAIM_TCL_V643_UNPROVEN,
-                    "effective TCL reclaim route is not blocked");
+                        GHOST_RECLAIM_TCL_V643_EXACT,
+                    "effective TCL exact reclaim route is not selected");
   failed |= require(active_offsets->slub_min_partial == 5 &&
                     active_offsets->slub_cpu_partial == 6,
                     "effective TCL SLUB thresholds are not exact V643 values");

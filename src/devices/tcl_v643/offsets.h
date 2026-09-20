@@ -1,21 +1,19 @@
 /* TCL C855 / T653T01 (G08), stock V643.
  *
  * Kernel and BTF are from the exact OTA boot image.  This entry deliberately
- * remains analysis-only until the MCAST ARM32 stack-overlay and page-reclaim
- * routes have been integrated without the QEMU harness.  Both the previous
+ * remains analysis-only until the integrated MCAST ARM32 stack-overlay and
+ * exact page-reclaim routes pass the final uninstrumented QEMU gate. Both the previous
  * SEQPACKET/sendmsg geometry and the source-built QEMU pselect geometry are
  * proven incompatible with this kernel.  The exact physical _text address
- * is proven offline as 0x26000000, but kernel_phys_load deliberately remains
- * the zero sentinel while the route blocker is active.  Selecting this entry
+ * is proven offline as 0x26000000 and recorded below. Selecting this entry
  * must stop before any primitive is armed.
  */
 OFFSETS_ENTRY("5.15.180-android14-11",
   .analysis_only = 1,
   .stack_overlay_route = GHOST_STACK_OVERLAY_TCL_V643_MCAST_COMPAT,
-  .reclaim_route = GHOST_RECLAIM_TCL_V643_UNPROVEN,
-  .analysis_blocker = "TCL V643 uninstrumented real-device reclaim/address discovery, shell permissions and Android SELinux not proven",
-  /* Intentional safety sentinel; proven physical _text is documented offline. */
-  .kernel_phys_load = 0,
+  .reclaim_route = GHOST_RECLAIM_TCL_V643_EXACT,
+  .analysis_blocker = "TCL V643 exact reclaim and split-ABI route integrated; uninstrumented QEMU gate still pending",
+  .kernel_phys_load = 0x26000000ULL,
   /* /proc/zoneinfo: start_pfn=131072, PAGE_SIZE=4096. */
   .phys_offset = 0x20000000,
   /* Exact V643 instructions use -(1UL << 39) for the linear map.  Live

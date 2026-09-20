@@ -18,6 +18,10 @@ enum ghost_reclaim_route {
   /* TCL has matching order-2 object geometry, but its CPU/node-partial and
    * PCP choreography has not been demonstrated on the exact V643 kernel. */
   GHOST_RECLAIM_TCL_V643_UNPROVEN = 1,
+  /* Exact V643 sequence validated in the full-kernel harness: 16 node
+   * partial ballast slabs, one fully controlled target slab, then eight
+   * one-object drain slabs interleaved with order-2 io_uring allocations. */
+  GHOST_RECLAIM_TCL_V643_EXACT = 2,
 };
 
 struct kernel_offsets {

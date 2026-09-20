@@ -14,7 +14,7 @@ CFLAGS := -O2 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function
   -include stubs/dl_stub.h
 LDFLAGS := -static -pthread
 
-.PHONY: all clean profile-guard-test tcl-v643-stack-geometry-test \
+.PHONY: all clean ghostlock-tcl-v643-lab profile-guard-test tcl-v643-stack-geometry-test \
 	tcl-v643-syscall-stack-model-test \
 	tcl-v643-pi-blocked-on-model-test \
 	tcl-v643-pselect-rounds-model-test \
@@ -30,8 +30,14 @@ all: ghostlock
 ghostlock: $(SRCS)
 	$(NDK_CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
+# Explicitly armed laboratory build.  The ordinary `ghostlock` target keeps
+# the profile's analysis_only stop.  This target exists for the disposable
+# uninstrumented QEMU gate and must not be copied to the TV by automation.
+ghostlock-tcl-v643-lab: $(SRCS)
+	$(NDK_CC) $(CFLAGS) -DTCL_V643_LAB_ARMING=1 $(LDFLAGS) $^ -o $@
+
 clean:
-	rm -f ghostlock tcl-v643-mcast-helper
+	rm -f ghostlock ghostlock-tcl-v643-lab tcl-v643-mcast-helper
 
 # Non-arming AArch32 component used to freeze the split-ABI boundary.  It has
 # no command that issues the carrier syscall; --selftest only checks ILP32,

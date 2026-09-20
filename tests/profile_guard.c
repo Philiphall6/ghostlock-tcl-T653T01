@@ -31,13 +31,13 @@ int main(void) {
   failed |= require(tcl->stack_overlay_route ==
                         GHOST_STACK_OVERLAY_TCL_V643_MCAST_COMPAT,
                     "TCL V643 must select its ARM32 MCAST carrier");
-  failed |= require(tcl->reclaim_route == GHOST_RECLAIM_TCL_V643_UNPROVEN,
-                    "TCL V643 must refuse the unproven reclaim route");
+  failed |= require(tcl->reclaim_route == GHOST_RECLAIM_TCL_V643_EXACT,
+                    "TCL V643 must select the exact reclaim route");
   failed |= require(tcl->analysis_blocker != NULL &&
-                    strstr(tcl->analysis_blocker, "not proven") != NULL,
+                    strstr(tcl->analysis_blocker, "pending") != NULL,
                     "analysis-only profile must state its blocker");
-  failed |= require(tcl->kernel_phys_load == 0,
-                    "unproven kernel physical load must stay unset");
+  failed |= require(tcl->kernel_phys_load == 0x26000000ULL,
+                    "proven TCL physical text load changed unexpectedly");
   failed |= require(tcl->phys_offset == 0x20000000ULL,
                     "TCL DRAM physical base changed unexpectedly");
   failed |= require(tcl->page_offset == 0xffffff8000000000ULL,
