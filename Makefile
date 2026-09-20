@@ -20,7 +20,8 @@ LDFLAGS := -static -pthread
 	tcl-v643-pselect-semantics-test tcl-v643-runtime-offsets-test \
 	tcl-v643-slub-reclaim-model-test tcl-v643-io-uring-pcp-model-test \
 	tcl-v643-compat-select-model-test tcl-v643-direct-primitive-model-test \
-	tcl-v643-kaslr-model-test tcl-v643-mcast-geometry-test
+	tcl-v643-kaslr-model-test tcl-v643-mcast-geometry-test \
+	tcl-v643-cleanup-invariants-test
 
 all: ghostlock
 
@@ -109,3 +110,9 @@ tcl-v643-kaslr-model-test:
 tcl-v643-mcast-geometry-test:
 	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_mcast_geometry.c -o /tmp/tcl-v643-mcast-geometry
 	/tmp/tcl-v643-mcast-geometry
+
+# Host-only cleanup state model derived from the exact V643 rtmutex
+# disassembly. It contains no futex syscall and cannot arm the vulnerability.
+tcl-v643-cleanup-invariants-test:
+	$(CC) -O2 -Wall tests/tcl_v643_cleanup_invariants.c -o /tmp/tcl-v643-cleanup-invariants
+	/tmp/tcl-v643-cleanup-invariants
