@@ -1,4 +1,5 @@
 # Build artifacts
 ghostlock
+ghostlock-tcl-v643-lab
 tcl-v643-mcast-helper
 *.o
