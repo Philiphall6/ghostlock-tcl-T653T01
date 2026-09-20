@@ -13,7 +13,7 @@ OFFSETS_ENTRY("5.15.180-android14-11",
   .analysis_only = 1,
   .stack_overlay_route = GHOST_STACK_OVERLAY_TCL_V643_MCAST_COMPAT,
   .reclaim_route = GHOST_RECLAIM_TCL_V643_UNPROVEN,
-  .analysis_blocker = "TCL V643 real-device page reclaim/addressing and split-ABI MCAST helper not proven",
+  .analysis_blocker = "TCL V643 uninstrumented real-device reclaim/address discovery, shell permissions and Android SELinux not proven",
   /* Intentional safety sentinel; proven physical _text is documented offline. */
   .kernel_phys_load = 0,
   /* /proc/zoneinfo: start_pfn=131072, PAGE_SIZE=4096. */

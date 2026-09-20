@@ -11,12 +11,15 @@
 
 The exact-source QEMU validation subsequently completed the live
 futex/MCAST/PI/`rb_erase`/credential chain and clean teardown on 10/10
-independent boots. It also rejected the source-built `_newselect` layout and
-selected the V643 AArch32 compat `MCAST_BLOCK_SOURCE` copy at waiter offset
-`+0x80`. The TCL profile now names that route explicitly. The AArch64 binary
-refuses to fall back to SEQPACKET: a split-ABI AArch32 waiter/helper, plus the
-real-device reclaim/addressing that QEMU supplies through its harness, still
-has to be integrated. These changes do not make the TV profile runnable.
+independent boots. A second integrated campaign used a genuine order-2
+`mm_struct` slab, discarded it to CPU0 PCP index 8, captured its exact PFN
+with `io_uring`, used that captured page for the AArch64/AArch32 chain, and
+reached normalized UID/EUID/GID 0 on 10/10 independent boots. The QEMU
+observer still reveals the target slab/PFN/KVA, current task, scheduler group
+and credential template, and the setup starts privileged before dropping its
+UID. The uninstrumented discovery, Android shell permissions and SELinux
+effect therefore remain unproved. These changes do not make the TV profile
+runnable.
 
 The host-only target `tcl-v643-syscall-stack-model-test` models the exact V643
 entry frames and the dormant random-kstack alternative. The stock V643 live
