@@ -20,7 +20,7 @@ LDFLAGS := -static -pthread
 	tcl-v643-pselect-semantics-test tcl-v643-runtime-offsets-test \
 	tcl-v643-slub-reclaim-model-test tcl-v643-io-uring-pcp-model-test \
 	tcl-v643-compat-select-model-test tcl-v643-direct-primitive-model-test \
-	tcl-v643-kaslr-model-test
+	tcl-v643-kaslr-model-test tcl-v643-mcast-geometry-test
 
 all: ghostlock
 
@@ -103,3 +103,9 @@ tcl-v643-direct-primitive-model-test:
 tcl-v643-kaslr-model-test:
 	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_kaslr_model.c -o /tmp/tcl-v643-kaslr-model
 	/tmp/tcl-v643-kaslr-model
+
+# Host-only coordinate proof for the native and AArch32-compat IPv4
+# MCAST_BLOCK_SOURCE copies in the exact V643 image. It issues no syscall.
+tcl-v643-mcast-geometry-test:
+	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_mcast_geometry.c -o /tmp/tcl-v643-mcast-geometry
+	/tmp/tcl-v643-mcast-geometry
