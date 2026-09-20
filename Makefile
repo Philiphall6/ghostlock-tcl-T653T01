@@ -2,6 +2,7 @@ API ?= 35
 
 NDK_ROOT ?= $(or $(ANDROID_NDK_HOME),$(ANDROID_NDK_ROOT))
 NDK_CC := $(NDK_ROOT)/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android$(API)-clang
+NDK_ARM32_CC := $(NDK_ROOT)/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi$(API)-clang
 
 SRCS := \
   src/core/main.c \
@@ -21,6 +22,7 @@ LDFLAGS := -static -pthread
 	tcl-v643-slub-reclaim-model-test tcl-v643-io-uring-pcp-model-test \
 	tcl-v643-compat-select-model-test tcl-v643-direct-primitive-model-test \
 	tcl-v643-kaslr-model-test tcl-v643-mcast-geometry-test \
+	tcl-v643-mcast-carrier-test tcl-v643-mcast-helper \
 	tcl-v643-cleanup-invariants-test
 
 all: ghostlock
@@ -29,7 +31,13 @@ ghostlock: $(SRCS)
 	$(NDK_CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
 
 clean:
-	rm -f ghostlock
+	rm -f ghostlock tcl-v643-mcast-helper
+
+# Non-arming AArch32 component used to freeze the split-ABI boundary.  It has
+# no command that issues the carrier syscall; --selftest only checks ILP32,
+# the fixed-width protocol and byte layout.
+tcl-v643-mcast-helper: src/helpers/tcl_v643_mcast_helper.c
+	$(NDK_ARM32_CC) $(CFLAGS) $(LDFLAGS) $< -o $@
 
 # Native, host-only validation of the non-runnable TCL profile.  This target
 # does not compile or execute the exploit implementation.
@@ -110,6 +118,12 @@ tcl-v643-kaslr-model-test:
 tcl-v643-mcast-geometry-test:
 	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_mcast_geometry.c -o /tmp/tcl-v643-mcast-geometry
 	/tmp/tcl-v643-mcast-geometry
+
+# Host-only byte-layout validation for the ARM32 compat MCAST source request.
+# It does not issue setsockopt, futex, reclaim or any other syscall.
+tcl-v643-mcast-carrier-test:
+	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_mcast_carrier.c -o /tmp/tcl-v643-mcast-carrier
+	/tmp/tcl-v643-mcast-carrier
 
 # Host-only cleanup state model derived from the exact V643 rtmutex
 # disassembly. It contains no futex syscall and cannot arm the vulnerability.

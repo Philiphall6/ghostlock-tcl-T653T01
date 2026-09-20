@@ -52,9 +52,19 @@ static int print_profile_info(const char *release_override) {
   }
   printf("profile=present\n");
   printf("analysis_only=%u\n", profile->analysis_only);
-  printf("stack_overlay_route=%s\n",
-         profile->stack_overlay_route == GHOST_STACK_OVERLAY_TCL_V643_PSELECT6 ?
-             "tcl-v643-pselect6" : "seqpacket");
+  const char *stack_route = "unknown";
+  switch (profile->stack_overlay_route) {
+    case GHOST_STACK_OVERLAY_SEQPACKET:
+      stack_route = "seqpacket";
+      break;
+    case GHOST_STACK_OVERLAY_TCL_V643_PSELECT6:
+      stack_route = "tcl-v643-pselect6-rejected";
+      break;
+    case GHOST_STACK_OVERLAY_TCL_V643_MCAST_COMPAT:
+      stack_route = "tcl-v643-mcast-arm32-compat";
+      break;
+  }
+  printf("stack_overlay_route=%s\n", stack_route);
   printf("reclaim_route=%s\n",
          profile->reclaim_route == GHOST_RECLAIM_TCL_V643_UNPROVEN ?
              "tcl-v643-unproven" : "reference-sabrina");

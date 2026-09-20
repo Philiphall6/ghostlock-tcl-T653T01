@@ -6,6 +6,10 @@
 enum ghost_stack_overlay_route {
   GHOST_STACK_OVERLAY_SEQPACKET = 0,
   GHOST_STACK_OVERLAY_TCL_V643_PSELECT6 = 1,
+  /* Exact V643 Full-LTO geometry validated in the ARM32 compat syscall
+   * path.  This route requires an AArch32 waiter/helper; an AArch64 syscall
+   * reaches the native copy and misses the stale waiter. */
+  GHOST_STACK_OVERLAY_TCL_V643_MCAST_COMPAT = 2,
 };
 
 enum ghost_reclaim_route {

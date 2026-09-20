@@ -428,8 +428,9 @@ static void readback_full_diff(void) {
  *      -ERESTARTNOINTR (kernel-internal restart), the do_futex frame
  *      unwinds, the signal handler runs on the waiter in USERSPACE.
  *   4. handler: do_pselect_fake_lock_route() -> the profile-selected stack
- *      carrier. Sabrina uses SEQPACKET; TCL V643 has an exact pselect6
- *      stack_fds mapping. On the exact stock V643 boot, the compiled
+ *      carrier. Sabrina uses SEQPACKET. TCL V643 now selects the AArch32
+ *      compat MCAST copy; its older pselect scaffold is retained only for
+ *      regression and is not selected. On the exact stock V643 boot, the
  *      random-kstack static key defaults off and no boot parameter enables
  *      it. Every syscall therefore re-enters at the same kernel-stack
  *      coordinate and the selected frame lands at the dangling waiter.
@@ -1260,6 +1261,17 @@ out:
           ghost_plan_count(), cfi_last_step, cfi_last_errno);
 }
 
+/* The exact V643 carrier lives in the AArch32 compat setsockopt path.  The
+ * current production binary is AArch64, so silently falling through to the
+ * Sabrina SEQPACKET route would use a geometry already proven incompatible.
+ * Keep this second refusal even behind analysis_only: the eventual port must
+ * explicitly supply a split-ABI AArch32 waiter/helper and its IPC lifecycle. */
+static void do_tcl_v643_mcast_compat_route(void) {
+  cfi_last_step = 137;
+  cfi_last_errno = ENOTSUP;
+  pr_warning("TCL MCAST route requires the not-yet-integrated AArch32 waiter/helper; refusing AArch64 fallback\n");
+}
+
 void do_pselect_fake_lock_route(void) {
   if (active_offsets &&
       active_offsets->stack_overlay_route ==
@@ -1271,6 +1283,18 @@ void do_pselect_fake_lock_route(void) {
       return;
     }
     do_tcl_v643_pselect6_fake_lock_route();
+    return;
+  }
+  if (active_offsets &&
+      active_offsets->stack_overlay_route ==
+          GHOST_STACK_OVERLAY_TCL_V643_MCAST_COMPAT) {
+    if (active_offsets->analysis_only) {
+      cfi_last_step = 129;
+      cfi_last_errno = EPERM;
+      pr_warning("TCL MCAST ARM32 route refused: analysis-only profile\n");
+      return;
+    }
+    do_tcl_v643_mcast_compat_route();
     return;
   }
   do_seqpacket_fake_lock_route();

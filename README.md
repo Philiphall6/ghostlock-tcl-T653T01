@@ -9,6 +9,15 @@
 > diagnostic; it contains no futex PI, reclaim or kernel address and passed
 > 11/11 before being removed from the television.
 
+The exact-source QEMU validation subsequently completed the live
+futex/MCAST/PI/`rb_erase`/credential chain and clean teardown on 10/10
+independent boots. It also rejected the source-built `_newselect` layout and
+selected the V643 AArch32 compat `MCAST_BLOCK_SOURCE` copy at waiter offset
+`+0x80`. The TCL profile now names that route explicitly. The AArch64 binary
+refuses to fall back to SEQPACKET: a split-ABI AArch32 waiter/helper, plus the
+real-device reclaim/addressing that QEMU supplies through its harness, still
+has to be integrated. These changes do not make the TV profile runnable.
+
 The host-only target `tcl-v643-syscall-stack-model-test` models the exact V643
 entry frames and the dormant random-kstack alternative. The stock V643 live
 configuration leaves that static key disabled, preserving the futex/pselect
@@ -22,14 +31,13 @@ The upstream Android fix confirms this task mismatch. The test issues no
 syscall and does not prove that the current TCL choreography reaches the
 required post-enqueue `-EDEADLK`, signal timing, PI walk or reclaim.
 
-The trigger now also refuses `CMP_REQUEUE_PI` until the contending owner has
+The trigger also refuses `CMP_REQUEUE_PI` until the contending owner has
 published `FUTEX_WAITERS` on the chain lock. This closes the former fixed-delay
-race and makes the intended proxy -> target owner -> proxy cycle explicit in
-the host model. The TCL carrier now creates a fresh `pselect6` frame for each
-pending write round (up to the 7/14/19 nice ladder), with a host-only control
-model covering three writes. These are offline structural completions only:
-the TCL profile remains analysis-only and the live PI walk/reclaim path has
-not been executed.
+race and makes the intended proxy -> target owner -> proxy cycle explicit.
+The earlier multi-round `pselect6` scaffold is retained only as a regression
+model and is no longer selected by the TCL profile. QEMU has executed the live
+PI walk, two `rb_erase` writes and cleanup; the real-device reclaim and the
+split-process AArch32 lifecycle have not been executed.
 
 The separate ARM32-compat model now establishes a reclaim-free candidate for
 the TCL: `_newselect` places its bitmap block at `syscall_sp-0x200`, covering
