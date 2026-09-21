@@ -59,13 +59,42 @@ Log SHA-256:
 - final Android 14 API 34 binaries compile for AArch64 plus AArch32 helper.
 
 Android lab binary SHA-256:
-`f5510efe8e9aba5154ef3e10c9078d32982d569c2829edf4f8ab2163eddd074e`
+`af5a9f395a5dfbf42b569d4ec1d1e61365c243f3e4f3a15f6c58ed8f3f434efe`
 
-## Remaining blocker
+Normal analysis-only binary SHA-256:
+`6a6748cd4c6ff034456dedadaffabf0fc450b3d450b7b157f2d12422936991f5`
 
-The stock Android shell normally receives zeroed PFNs from
-`/proc/self/pagemap`. Until the safe read-only preflight reports otherwise,
-the stabilized build is expected to refuse a live TV attempt. This is an
+## Live TV validation
+
+The safe preflight on the stock V643 TV returned:
+
+`CAPTURE_WITNESS_PREFLIGHT PFN_VISIBLE=0 PFN=0 SAFE_READ_ONLY=1`
+
+A single guarded attempt (`FOPS_MAX_ATTEMPTS=1`, `CRED_ATTEMPTS=1`) then
+reported `visible=0/16 hits=0 block=-1` and refused the route. The complete
+log contains no `heap spray done`, `TCL split`, `rb_erase` or root marker.
+
+That first validation exposed a userspace-only cleanup defect: two expected
+refusal messages still used `pr_error()`, whose macro calls `exit()` before
+the reclaim and relay cleanup blocks. The kernel route was never entered, but
+the diagnostic relay became an init-owned shell process and kept the ADB pipe
+open. Both refusal paths now use non-fatal returns. A final bounded run emitted
+the following ordered markers and returned in eight seconds:
+
+```text
+TCL capture witness: method=pagemap visible=0/16 hits=0 block=-1 ... verdict=0
+TCL reclaim: capture is not proven; refusing the dangerous route
+heap spray failed or was refused by the capture gate
+TCL relay: fail-path child reaped status=0
+cred swap failed after 1 attempts
+```
+
+No GhostLock process remained afterward. The nonzero program status is the
+intentional fail-closed result.
+
+The Android shell therefore receives zeroed PFNs from `/proc/self/pagemap`.
+The stabilized build correctly refuses a live root attempt. This is an
 intentional safety result, not a failed exploit retry.
 
-No command was sent to the TV during this stabilization work.
+Post-check state remained AVB green, VBMeta locked, verity enforcing and
+SELinux enforcing, with continuously increasing uptime and no reboot.

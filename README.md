@@ -34,8 +34,13 @@ UID. The final stability gate additionally requires all 16 mapping PFNs to be
 visible, exactly one target hit, and the later `rb_erase` marker to appear in
 that same witnessed block. Its positive two-cycle run passed; a negative VM
 without the PFN ioctl returned `visible=0/16` and stopped before `TCL split`
-without a panic. Android-shell PFN visibility remains to be checked using the
-read-only preflight above.
+without a panic. The read-only preflight on the V643 TV returned
+`PFN_VISIBLE=0`; a single guarded live attempt then returned `visible=0/16`
+and refused before `TCL split`. Android 14 masks pagemap PFNs for this ADB
+shell, so the stabilized route remains blocked before the trigger. A cleanup
+regression discovered during that validation was also fixed: expected capture
+refusals now unwind normally, signal and reap the original-shell relay, and
+return without leaving an init-owned process or holding the ADB transport.
 
 The host-only target `tcl-v643-syscall-stack-model-test` models the exact V643
 entry frames and the dormant random-kstack alternative. The stock V643 live

