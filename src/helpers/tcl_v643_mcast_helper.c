@@ -55,8 +55,11 @@ static void sigusr1_handler(int sig) {
   tcl_v643_build_mcast_carrier(
       &carrier, shared->message.fake_task, shared->message.fake_lock,
       shared->message.wake_state, shared->message.prio);
-  (void)syscall(SYS_setsockopt, mcast_fd, IPPROTO_IP, MCAST_BLOCK_SOURCE,
-                carrier.bytes, sizeof(carrier.bytes));
+  errno = 0;
+  shared->diag_mcast_ret = (int32_t)syscall(
+      SYS_setsockopt, mcast_fd, IPPROTO_IP, MCAST_BLOCK_SOURCE,
+      carrier.bytes, sizeof(carrier.bytes));
+  shared->diag_mcast_errno = errno;
   atomic_store_explicit(&shared->round_go, 1, memory_order_release);
   while (!atomic_load_explicit(&shared->round_done, memory_order_acquire))
     atomic_signal_fence(memory_order_seq_cst);
@@ -82,8 +85,11 @@ static void *waiter_main(void *unused) {
   clock_gettime(CLOCK_MONOTONIC, &deadline);
   deadline.tv_sec += 1;
   atomic_store(&shared->waiter_waiting, 1);
-  (void)futex_call(&shared->f_wait, FUTEX_WAIT_REQUEUE_PI, 0, &deadline,
-                   &shared->f_target, 0);
+  errno = 0;
+  shared->diag_wait_ret = (int32_t)futex_call(
+      &shared->f_wait, FUTEX_WAIT_REQUEUE_PI, 0, &deadline,
+      &shared->f_target, 0);
+  shared->diag_wait_errno = errno;
 
   /* Force the restarted waiter through a bounded ETIMEDOUT cleanup.  The
    * process leader stays alive in pthread_join, so it is a valid apparent
@@ -93,6 +99,7 @@ static void *waiter_main(void *unused) {
     struct timespec expired = {0, 0};
     errno = 0;
     long ret = futex_call(&dummy_pi, FUTEX_LOCK_PI, 0, &expired, NULL, 0);
+    shared->diag_disarm_errno = errno;
     if (ret != -1 || errno != ETIMEDOUT)
       helper_fail();
     else

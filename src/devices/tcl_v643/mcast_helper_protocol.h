@@ -50,7 +50,11 @@ struct tcl_v643_mcast_shared {
   _Atomic uint32_t helper_tid;                  /* 0x60 */
   _Atomic uint32_t helper_uid;                  /* 0x64 */
   _Atomic uint32_t erase_landed;                /* 0x68 */
-  uint32_t reserved1[5];                        /* 0x6c..0x7f */
+  int32_t diag_mcast_ret;                       /* 0x6c */
+  int32_t diag_mcast_errno;                     /* 0x70 */
+  int32_t diag_wait_ret;                        /* 0x74 */
+  int32_t diag_wait_errno;                      /* 0x78 */
+  int32_t diag_disarm_errno;                    /* 0x7c */
 };
 
 _Static_assert(offsetof(struct tcl_v643_mcast_shared, f_wait) == 40,

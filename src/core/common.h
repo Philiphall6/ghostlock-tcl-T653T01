@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <linux/futex.h>
 #include <linux/memfd.h>
+#include <linux/reboot.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
