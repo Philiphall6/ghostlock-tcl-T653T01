@@ -1,13 +1,26 @@
 # GhostLock Sabrina
 
-> **TCL V643 analysis branch:** the added TCL C855/T653T01 profile is an
-> offline-only, non-runnable port. It remains guarded by `analysis_only=1`,
-> `kernel_phys_load=0` and `reclaim_route=tcl-v643-unproven`. Do not use the
-> deployment commands below on the TCL TV. `--profile-info
-> 5.15.180-android14-11` remains QEMU-only. The only TCL-side executable test
-> was the separate, non-vulnerable `tcl_v643_pselect_semantics.c` carrier
-> diagnostic; it contains no futex PI, reclaim or kernel address and passed
-> 11/11 before being removed from the television.
+> **TCL V643 stability branch:** the TCL C855/T653T01 port has reached
+> volatile UID 0 on the salon V643 TV and passed the full two-cycle QEMU root
+> gate. Two later unwitnessed live reclaims nevertheless caused kernel
+> panics. The port is therefore fail-closed again: the split futex/MCAST route
+> cannot be created unless exactly one tracked mapping is proven to own the
+> leaked `mm_struct` slab PFN. The normal binary remains `analysis_only=1`;
+> the armed build is laboratory-only and must not be run on the TV while the
+> Android shell cannot provide that PFN witness. No flash, fastboot or OEM
+> unlock is involved.
+
+The read-only command below checks the remaining device capability. It maps
+one private page and reads its own pagemap entry; it performs no reclaim,
+futex PI, MCAST or kernel write:
+
+```sh
+./ghostlock-tcl-v643-lab --capture-witness-preflight
+```
+
+`PFN_VISIBLE=0` means a live attempt will stop safely before the trigger.
+`PFN_VISIBLE=1` only makes the capture witness technically available; it is
+not by itself authorization to run the root path.
 
 The exact-source QEMU validation subsequently completed the live
 futex/MCAST/PI/`rb_erase`/credential chain and clean teardown on 10/10
@@ -15,11 +28,14 @@ independent boots. A second integrated campaign used a genuine order-2
 `mm_struct` slab, discarded it to CPU0 PCP index 8, captured its exact PFN
 with `io_uring`, used that captured page for the AArch64/AArch32 chain, and
 reached normalized UID/EUID/GID 0 on 10/10 independent boots. The QEMU
-observer still reveals the target slab/PFN/KVA, current task, scheduler group
-and credential template, and the setup starts privileged before dropping its
-UID. The uninstrumented discovery, Android shell permissions and SELinux
-effect therefore remain unproved. These changes do not make the TV profile
-runnable.
+observer reveals the target slab/PFN/KVA, current task, scheduler group and
+credential template, and the setup starts privileged before dropping its
+UID. The final stability gate additionally requires all 16 mapping PFNs to be
+visible, exactly one target hit, and the later `rb_erase` marker to appear in
+that same witnessed block. Its positive two-cycle run passed; a negative VM
+without the PFN ioctl returned `visible=0/16` and stopped before `TCL split`
+without a panic. Android-shell PFN visibility remains to be checked using the
+read-only preflight above.
 
 The host-only target `tcl-v643-syscall-stack-model-test` models the exact V643
 entry frames and the dormant random-kstack alternative. The stock V643 live

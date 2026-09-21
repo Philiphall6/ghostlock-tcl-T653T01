@@ -23,7 +23,7 @@ LDFLAGS := -static -pthread
 	tcl-v643-compat-select-model-test tcl-v643-direct-primitive-model-test \
 	tcl-v643-kaslr-model-test tcl-v643-mcast-geometry-test \
 	tcl-v643-mcast-carrier-test tcl-v643-mcast-helper \
-	tcl-v643-cleanup-invariants-test
+	tcl-v643-cleanup-invariants-test tcl-v643-capture-witness-test
 
 all: ghostlock
 
@@ -136,3 +136,9 @@ tcl-v643-mcast-carrier-test:
 tcl-v643-cleanup-invariants-test:
 	$(CC) -O2 -Wall tests/tcl_v643_cleanup_invariants.c -o /tmp/tcl-v643-cleanup-invariants
 	/tmp/tcl-v643-cleanup-invariants
+
+# Host-only parser/verdict tests for the pre-trigger PFN witness.  No futex,
+# io_uring, reclaim, kernel address or device access is performed.
+tcl-v643-capture-witness-test:
+	$(CC) -O2 -Wall tests/tcl_v643_capture_witness.c -o /tmp/tcl-v643-capture-witness
+	/tmp/tcl-v643-capture-witness

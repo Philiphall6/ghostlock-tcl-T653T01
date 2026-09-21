@@ -29,6 +29,7 @@ static inline int __system_property_get(const char *name, char *value) {
 #include <arpa/inet.h>
 #include <sys/utsname.h>
 #include "tcl_v643/mcast_helper_protocol.h"
+#include "tcl_v643/capture_witness.h"
 
 const struct kernel_offsets *active_offsets = NULL;
 
@@ -689,6 +690,11 @@ static void *tcl_split_consumer(void *opaque) {
           (unsigned long long)cleared, s->diag_mcast_ret,
           s->diag_mcast_errno, s->diag_wait_ret, s->diag_wait_errno,
           s->diag_disarm_errno);
+  if (sr == 0 && found >= 0 && found != g_tcl_capture_block) {
+    pr_error("TCL split: erase changed block %d, witness proved block %d\n",
+             found, g_tcl_capture_block);
+    found = -1;
+  }
   if (sr == 0 && found >= 0) {
     if (pselect_custom_write == 5) {
       uint8_t *hit = uring_block(found);
@@ -754,6 +760,10 @@ static int run_tcl_v643_split_route(void) {
   struct tcl_split_run run = {0};
   pthread_t owner, consumer;
   int fd = -1, status = 0;
+  if (!tcl_capture_may_arm(g_tcl_capture_status, g_tcl_capture_block)) {
+    pr_error("TCL split: no confirmed capture witness; refusing to create the chain\n");
+    return 0;
+  }
   const char *helper = getenv("TCL_MCAST_HELPER");
   if (!helper || !helper[0])
     helper = "/data/local/tmp/tcl-v643-mcast-helper";
@@ -3451,6 +3461,13 @@ static void ghost_segv_handler(int sig, siginfo_t *si, void *uc) {
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--profile-info") == 0)
         return print_profile_info(argc > 2 ? argv[2] : NULL);
+    if (argc > 1 && strcmp(argv[1], "--capture-witness-preflight") == 0) {
+        uint64_t pfn = 0;
+        int visible = tcl_pagemap_pfn_preflight(&pfn);
+        printf("CAPTURE_WITNESS_PREFLIGHT PFN_VISIBLE=%d PFN=%llx "
+               "SAFE_READ_ONLY=1\n", visible, (unsigned long long)pfn);
+        return 0;
+    }
     struct sigaction sa = { .sa_sigaction = ghost_segv_handler,
                             .sa_flags = SA_SIGINFO };
     sigaction(SIGSEGV, &sa, NULL);
