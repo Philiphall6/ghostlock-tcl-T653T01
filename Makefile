@@ -24,7 +24,8 @@ LDFLAGS := -static -pthread
 	tcl-v643-kaslr-model-test tcl-v643-mcast-geometry-test \
 	tcl-v643-mcast-carrier-test tcl-v643-mcast-helper \
 	tcl-v643-cleanup-invariants-test tcl-v643-capture-witness-test \
-	tcl-v643-uring-perf-witness-test tcl-v643-uring-perf-probe
+	tcl-v643-uring-perf-witness-test tcl-v643-sid-probe-model-test \
+	tcl-v643-uring-perf-probe
 
 all: ghostlock
 
@@ -155,3 +156,9 @@ tcl-v643-capture-witness-test:
 tcl-v643-uring-perf-witness-test:
 	$(CC) -O2 -Wall tests/tcl_v643_uring_perf_witness.c -o /tmp/tcl-v643-uring-perf-witness
 	/tmp/tcl-v643-uring-perf-witness
+
+# Host-only state model for the post-cred candidate-first SID probe.  It
+# validates fail-closed selection and contains no syscall or device access.
+tcl-v643-sid-probe-model-test:
+	$(CC) -O2 -Wall tests/tcl_v643_sid_probe_model.c -o /tmp/tcl-v643-sid-probe-model
+	/tmp/tcl-v643-sid-probe-model
