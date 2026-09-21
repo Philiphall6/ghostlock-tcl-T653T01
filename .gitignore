@@ -2,5 +2,6 @@
 ghostlock
 ghostlock-tcl-v643-lab
 tcl-v643-mcast-helper
+tcl-v643-uring-perf-probe
 *.o
 /build/

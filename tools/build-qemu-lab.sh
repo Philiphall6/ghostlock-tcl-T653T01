@@ -16,6 +16,9 @@ arm-linux-gnueabihf-gcc $CFLAGS $INCLUDES \
   -DTARGET_CONFIG_H='"target.h"' -include "$ROOT/stubs/dl_stub.h" \
   -static -pthread "$ROOT/src/helpers/tcl_v643_mcast_helper.c" \
   -o "$OUT/tcl-v643-mcast-helper"
+aarch64-linux-gnu-gcc $CFLAGS -static \
+  "$ROOT/tests/tcl_v643_uring_perf_probe.c" \
+  -o "$OUT/tcl-v643-uring-perf-probe"
 
 cp -f "$OUT/ghostlock-tcl-v643-lab" "$ROOT/ghostlock-tcl-v643-lab"
 cp -f "$OUT/tcl-v643-mcast-helper" "$ROOT/tcl-v643-mcast-helper"

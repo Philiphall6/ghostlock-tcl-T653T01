@@ -23,7 +23,8 @@ LDFLAGS := -static -pthread
 	tcl-v643-compat-select-model-test tcl-v643-direct-primitive-model-test \
 	tcl-v643-kaslr-model-test tcl-v643-mcast-geometry-test \
 	tcl-v643-mcast-carrier-test tcl-v643-mcast-helper \
-	tcl-v643-cleanup-invariants-test tcl-v643-capture-witness-test
+	tcl-v643-cleanup-invariants-test tcl-v643-capture-witness-test \
+	tcl-v643-uring-perf-witness-test tcl-v643-uring-perf-probe
 
 all: ghostlock
 
@@ -37,7 +38,13 @@ ghostlock-tcl-v643-lab: $(SRCS)
 	$(NDK_CC) $(CFLAGS) -DTCL_V643_LAB_ARMING=1 $(LDFLAGS) $^ -o $@
 
 clean:
-	rm -f ghostlock ghostlock-tcl-v643-lab tcl-v643-mcast-helper
+	rm -f ghostlock ghostlock-tcl-v643-lab tcl-v643-mcast-helper \
+		tcl-v643-uring-perf-probe
+
+# Android/device-side non-arming feasibility probe for a PFN-free capture
+# witness. It uses ordinary io_uring, poll and perf sampling only.
+tcl-v643-uring-perf-probe: tests/tcl_v643_uring_perf_probe.c
+	$(NDK_CC) -O2 -Wall -static $< -o $@
 
 # Non-arming AArch32 component used to freeze the split-ABI boundary.  It has
 # no command that issues the carrier syscall; --selftest only checks ILP32,
@@ -142,3 +149,9 @@ tcl-v643-cleanup-invariants-test:
 tcl-v643-capture-witness-test:
 	$(CC) -O2 -Wall tests/tcl_v643_capture_witness.c -o /tmp/tcl-v643-capture-witness
 	/tmp/tcl-v643-capture-witness
+
+# Host-only exact-IP/register semantics for the PFN-free io_uring witness.
+# It parses synthetic register states and issues no syscall.
+tcl-v643-uring-perf-witness-test:
+	$(CC) -O2 -Wall tests/tcl_v643_uring_perf_witness.c -o /tmp/tcl-v643-uring-perf-witness
+	/tmp/tcl-v643-uring-perf-witness

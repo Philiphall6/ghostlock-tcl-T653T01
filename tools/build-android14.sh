@@ -28,14 +28,18 @@ trap restore_qemu EXIT INT TERM
 
 make -C "$ROOT" clean
 make -C "$ROOT" -j"$(nproc)" API="$API" NDK_ROOT="$NDK_ROOT" \
-  ghostlock ghostlock-tcl-v643-lab tcl-v643-mcast-helper
+  ghostlock ghostlock-tcl-v643-lab tcl-v643-mcast-helper \
+  tcl-v643-uring-perf-probe
 
 cp -f "$ROOT/ghostlock" "$ROOT/ghostlock-tcl-v643-lab" \
-  "$ROOT/tcl-v643-mcast-helper" "$ANDROID_OUT/"
+  "$ROOT/tcl-v643-mcast-helper" "$ROOT/tcl-v643-uring-perf-probe" \
+  "$ANDROID_OUT/"
 
 file "$ANDROID_OUT/ghostlock" "$ANDROID_OUT/ghostlock-tcl-v643-lab" \
-  "$ANDROID_OUT/tcl-v643-mcast-helper"
+  "$ANDROID_OUT/tcl-v643-mcast-helper" \
+  "$ANDROID_OUT/tcl-v643-uring-perf-probe"
 sha256sum "$ANDROID_OUT/ghostlock" \
   "$ANDROID_OUT/ghostlock-tcl-v643-lab" \
-  "$ANDROID_OUT/tcl-v643-mcast-helper" > "$ANDROID_OUT/SHA256SUMS"
+  "$ANDROID_OUT/tcl-v643-mcast-helper" \
+  "$ANDROID_OUT/tcl-v643-uring-perf-probe" > "$ANDROID_OUT/SHA256SUMS"
 cat "$ANDROID_OUT/SHA256SUMS"

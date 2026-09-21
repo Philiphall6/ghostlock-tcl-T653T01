@@ -58,6 +58,10 @@ int main(void) {
                     CRED15_CAP_EFF_OFF == 0x38 &&
                     CRED15_USER_NS_OFF == 0x88,
                     "effective cred layout is not V643");
+  failed |= require(active_offsets->kimage_text_base +
+                        active_offsets->off_init_user_ns_device ==
+                        UINT64_C(0xffffffc00a879c90),
+                    "canonical V643 init_user_ns address changed");
   failed |= require(USER_STRUCT_SIZE == 0xa8 && UCOUNTS_SIZE == 0x90 &&
                     USER_NS_SIZE == 0x290 &&
                     USER_NS_GID_MAP_OFF == 0x48 &&

