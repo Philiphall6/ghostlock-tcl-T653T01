@@ -10,6 +10,9 @@ enum ghost_stack_overlay_route {
    * path.  This route requires an AArch32 waiter/helper; an AArch64 syscall
    * reaches the native copy and misses the stale waiter. */
   GHOST_STACK_OVERLAY_TCL_V643_MCAST_COMPAT = 2,
+  /* Persistent AArch32 _newselect carrier.  Unlike the MCAST copy, the
+   * controlled fd bitmaps remain on the kernel stack while select blocks. */
+  GHOST_STACK_OVERLAY_TCL_V643_NEWSELECT_COMPAT = 3,
 };
 
 enum ghost_reclaim_route {

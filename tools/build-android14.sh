@@ -2,7 +2,8 @@
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-NDK_ROOT=${NDK_ROOT:-/home/mint/.cache/oa2/android-ndk-r27d}
+NDK_ROOT=${NDK_ROOT:-${ANDROID_NDK_ROOT:-}}
+: "${NDK_ROOT:?Set ANDROID_NDK_ROOT or NDK_ROOT to Android NDK r27d}"
 API=${API:-34}
 QEMU_OUT="$ROOT/build/qemu-glibc"
 ANDROID_OUT="$ROOT/build/android${API}"

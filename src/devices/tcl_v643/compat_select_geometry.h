@@ -64,9 +64,11 @@
 
 /* Candidate value for an 8-byte rb_erase write to selinux_state.  The first
  * two little-endian bytes are zero (enforcing/checkreqprot), while byte two
- * is non-zero (initialized).  Its unavoidable +8 collateral write remains
- * inside the tail of non_irq_wake_reason, not an allocator or lock object.
- * This is still corruption of live state and therefore remains model-only. */
+ * is non-zero (initialized).  Bytes 3..7 temporarily overwrite
+ * policycap[0..4]; the normalized handoff MUST reload the live policy and
+ * verify 11100100 before restoring enforcing.  The separate +8 collateral
+ * write remains inside the tail of non_irq_wake_reason, not an allocator or
+ * lock object.  Reboot remains the sole cleanup boundary. */
 #define TCL_V643_NON_IRQ_WAKE_REASON_OFF        0x028eff28ULL
 #define TCL_V643_NON_IRQ_WAKE_REASON_SIZE             0x100U
 #define TCL_V643_SELINUX_STAMP_PARENT_OFF       0x028f0000ULL

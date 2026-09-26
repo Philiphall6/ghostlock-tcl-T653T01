@@ -1,8 +1,8 @@
 /* TCL C855 / T653T01 (G08), stock V643.
  *
  * Kernel and BTF are from the exact OTA boot image.  This entry deliberately
- * remains analysis-only until the integrated MCAST ARM32 stack-overlay and
- * exact page-reclaim routes pass the final uninstrumented QEMU gate. Both the previous
+ * remains analysis-only until the integrated ARM32 _newselect stack-overlay
+ * and exact page-reclaim routes pass the final offline gates. Both the previous
  * SEQPACKET/sendmsg geometry and the source-built QEMU pselect geometry are
  * proven incompatible with this kernel.  The exact physical _text address
  * is proven offline as 0x26000000 and recorded below. Selecting this entry
@@ -10,9 +10,9 @@
  */
 OFFSETS_ENTRY("5.15.180-android14-11",
   .analysis_only = 1,
-  .stack_overlay_route = GHOST_STACK_OVERLAY_TCL_V643_MCAST_COMPAT,
+  .stack_overlay_route = GHOST_STACK_OVERLAY_TCL_V643_NEWSELECT_COMPAT,
   .reclaim_route = GHOST_RECLAIM_TCL_V643_EXACT,
-  .analysis_blocker = "TCL V643 exact reclaim and split-ABI route integrated; uninstrumented QEMU gate still pending",
+  .analysis_blocker = "TCL V643 _newselect route passed QEMU; live PFN witness remains unavailable",
   .kernel_phys_load = 0x26000000ULL,
   /* /proc/zoneinfo: start_pfn=131072, PAGE_SIZE=4096. */
   .phys_offset = 0x20000000,

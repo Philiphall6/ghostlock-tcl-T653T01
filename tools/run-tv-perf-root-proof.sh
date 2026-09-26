@@ -3,8 +3,8 @@ set -u
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BUILD="$ROOT/build/android34"
-ADB_TARGET=${ADB_TARGET:-192.168.1.132:5555}
-ADB_VENDOR_KEYS=${ADB_VENDOR_KEYS:-/home/mint/.android/adbkey}
+: "${ADB_TARGET:?Set ADB_TARGET to the authorized TV serial}"
+ADB_VENDOR_KEYS=${ADB_VENDOR_KEYS:-${HOME}/.android/adbkey}
 export ADB_VENDOR_KEYS
 
 root_name=ghostlock-v643-perf-root-proof

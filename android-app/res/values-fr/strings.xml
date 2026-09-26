@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GhostLock TCL C855</string>
+    <string name="app_title">GhostLock TCL C855 — Root temporaire V643</string>
+    <string name="action_verify">1 — VÉRIFIER</string>
+    <string name="action_local_adb">2 — ADB LOCAL — AUTORISER / TESTER</string>
+    <string name="action_root">3 — ROOT TCL + RESUKISU — TEMPORAIRE</string>
+    <string name="action_open_manager">4 — OUVRIR LE GESTIONNAIRE RESUKISU</string>
+    <string name="action_stop_root">5 — ARRÊTER LE ROOT — REDÉMARRER LA TV</string>
+    <string name="chain_notice">Chaîne directe : contrôles V643, GhostLock UID 0, transfert à ReSukiSU pendant la fenêtre permissive, puis restauration du réseau et de SELinux. Une seule tentative par démarrage.</string>
+    <string name="adb_key_generating">Génération/chargement de la clé ADB dédiée…\nAndroid peut afficher une demande d’autorisation : acceptez-la uniquement après avoir appuyé sur ce bouton.</string>
+    <string name="root_starting">Vérification V643 avant la chaîne de root temporaire…</string>
+    <string name="manager_missing">Le gestionnaire TCL ReSukiSU requis est introuvable.</string>
+    <string name="stop_root_title">Arrêter le root temporaire ?</string>
+    <string name="stop_root_message">La TV va redémarrer pour retirer le module ReSukiSU temporaire et retrouver un noyau propre. Aucune image de démarrage, aucun VBMeta, firmware ou partition ne sera modifié.</string>
+    <string name="cancel">Annuler</string>
+    <string name="reboot">Redémarrer</string>
+    <string name="stopping_root">Arrêt du root temporaire par redémarrage…</string>
+</resources>

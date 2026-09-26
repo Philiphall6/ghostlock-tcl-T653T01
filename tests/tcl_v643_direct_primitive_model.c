@@ -118,6 +118,25 @@ int main(void) {
       selinux_prefix[2] == 0)
     return fail("SELinux enforcing/checkreqprot/initialized prefix is wrong");
 
+  /* Model the exact one-child stores used by the preserving route:
+   *   *selinux_state = child
+   *   *child         = (selinux_state - 8) | RB_BLACK
+   * The second store may corrupt only the diagnostic wake-reason buffer. */
+  uint8_t selinux_state_prefix[8];
+  uint8_t wake_reason[0x100];
+  memset(selinux_state_prefix, 0xff, sizeof(selinux_state_prefix));
+  memset(wake_reason, 'W', sizeof(wake_reason));
+  memcpy(selinux_state_prefix, &selinux_parent, sizeof(selinux_parent));
+  const uint64_t selinux_pc = (selinux_target - 8) | 1;
+  const size_t stamp_in_wake =
+      (size_t)(TCL_V643_SELINUX_STAMP_PARENT_OFF - wake_start);
+  if (stamp_in_wake + sizeof(selinux_pc) > sizeof(wake_reason))
+    return fail("preserving route collateral escapes wake-reason buffer");
+  memcpy(wake_reason + stamp_in_wake, &selinux_pc, sizeof(selinux_pc));
+  if (selinux_state_prefix[0] != 0 || selinux_state_prefix[1] != 0 ||
+      selinux_state_prefix[2] == 0)
+    return fail("preserving route does not keep initialized non-zero");
+
   printf("panic scratch: [%#llx,%#llx) = %u slots x %#x\n",
          (unsigned long long)scratch_start,
          (unsigned long long)scratch_end,

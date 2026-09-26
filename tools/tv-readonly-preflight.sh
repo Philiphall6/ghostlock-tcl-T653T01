@@ -1,9 +1,14 @@
 #!/bin/sh
 set -eu
 
-SERIAL=${1:-192.168.1.132:5555}
+SERIAL=${1:-${ADB_TARGET:-}}
 ADB=${ADB:-adb}
 fail=0
+
+if [ -z "$SERIAL" ]; then
+  printf 'Usage: %s <authorized-adb-serial>\n' "$0" >&2
+  exit 2
+fi
 
 prop() {
   "$ADB" -s "$SERIAL" shell getprop "$1" 2>/dev/null | tr -d '\r'
@@ -16,7 +21,7 @@ check_eq() {
   if [ "$got" = "$want" ]; then
     printf '[OK] %s=%s\n' "$label" "$got"
   else
-    printf '[BLOCKED] %s=%s (attendu %s)\n' "$label" "$got" "$want"
+    printf '[BLOCKED] %s=%s (expected %s)\n' "$label" "$got" "$want"
     fail=1
   fi
 }
@@ -45,15 +50,15 @@ check_eq kernel "$kernel" 5.15.180-android14-11
 
 case "$software" in
   *V8-T653T01-LF1V643*) printf '[OK] firmware=T653T01 V643\n' ;;
-  *) printf '[BLOCKED] firmware inattendu: %s\n' "$software"; fail=1 ;;
+  *) printf '[BLOCKED] unexpected firmware: %s\n' "$software"; fail=1 ;;
 esac
 case "$abilist" in
-  *arm64-v8a*) printf '[OK] ABI64 Android déclarée=%s\n' "$abilist" ;;
-  *) printf '[INFO] userspace Android 32 bits déclaré=%s; ELF ARM64 statique à tester séparément\n' "$abilist" ;;
+  *arm64-v8a*) printf '[OK] Android ABI64 reported=%s\n' "$abilist" ;;
+  *) printf '[INFO] reported 32-bit Android userspace=%s; test the static ARM64 ELF separately\n' "$abilist" ;;
 esac
 case "$abilist32" in
   *armeabi-v7a*) printf '[OK] ABI32=%s\n' "$abilist32" ;;
-  *) printf '[BLOCKED] ABI32 absente: %s\n' "$abilist32"; fail=1 ;;
+  *) printf '[BLOCKED] ABI32 missing: %s\n' "$abilist32"; fail=1 ;;
 esac
 
 for key in ro.build.type ro.build.tags ro.debuggable ro.secure ro.adb.secure \
@@ -74,7 +79,7 @@ done
 ' | tr -d '\r'
 
 if [ "$fail" -ne 0 ]; then
-  echo '[BLOCKED] Prévol en lecture seule non conforme.'
+  echo '[BLOCKED] Read-only preflight does not match the target profile.'
   exit 1
 fi
-echo '[OK] Prévol ADB en lecture seule conforme; aucun fichier écrit sur la TV.'
+echo '[OK] Read-only ADB preflight matches; no file was written to the TV.'

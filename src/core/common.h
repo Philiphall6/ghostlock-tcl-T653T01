@@ -416,6 +416,7 @@ void ghost_reset_plans(void);
 void ghost_push_plan(uintptr_t target, uintptr_t value);
 int ghost_plan_count(void);
 void ghost_apply_next_plan(int completed_walks);
+int ghost_rearm_captured_write(uintptr_t target, uintptr_t value);
 extern int g_route_write_ok;
 extern int g_write_plan_count;
 extern int g_write_plans_active;
@@ -594,6 +595,7 @@ void prepare_ctxs(void);
 int prepare_skb_payload(uintptr_t base, int payload_mode);
 uintptr_t prepare_kernel_page(int payload_mode);
 uintptr_t prepare_good_kernel_page(int payload_mode);
+int tcl_refresh_captured_page(uintptr_t base, int payload_mode);
 
 void fdset_put_word(fd_set *set, int word, uint64_t value);
 uint64_t fdset_get_word(const fd_set *set, int word);

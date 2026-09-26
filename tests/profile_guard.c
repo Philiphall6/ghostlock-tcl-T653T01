@@ -29,12 +29,12 @@ int main(void) {
   failed |= require(tcl->analysis_only == 1,
                     "TCL V643 profile must remain analysis-only");
   failed |= require(tcl->stack_overlay_route ==
-                        GHOST_STACK_OVERLAY_TCL_V643_MCAST_COMPAT,
-                    "TCL V643 must select its ARM32 MCAST carrier");
+                        GHOST_STACK_OVERLAY_TCL_V643_NEWSELECT_COMPAT,
+                    "TCL V643 must select its persistent ARM32 _newselect carrier");
   failed |= require(tcl->reclaim_route == GHOST_RECLAIM_TCL_V643_EXACT,
                     "TCL V643 must select the exact reclaim route");
   failed |= require(tcl->analysis_blocker != NULL &&
-                    strstr(tcl->analysis_blocker, "pending") != NULL,
+                    strstr(tcl->analysis_blocker, "PFN witness") != NULL,
                     "analysis-only profile must state its blocker");
   failed |= require(tcl->kernel_phys_load == 0x26000000ULL,
                     "proven TCL physical text load changed unexpectedly");
