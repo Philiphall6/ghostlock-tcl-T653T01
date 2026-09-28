@@ -1,4 +1,4 @@
-# GhostLock for TCL C855
+# GhostLock for TCL T653T01
 
 Experimental temporary-root port for the **TCL C855 / T653T01** running:
 
