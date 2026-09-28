@@ -16,6 +16,11 @@ aarch64-linux-gnu-gcc $CFLAGS -I"$ROOT/src/core" -I"$ROOT/src/devices" \
   "$ROOT/src/core/main.c" "$ROOT/src/core/util.c" \
   "$ROOT/src/core/fops.c" "$OUT/tcl-root-broker-embedded.o" \
   -o "$OUT/ghostlock-tcl-v643-lab"
+aarch64-linux-gnu-gcc $CFLAGS -I"$ROOT/src/core" -I"$ROOT/src/devices" \
+  -DTARGET_CONFIG_H='"target.h"' -include "$ROOT/stubs/dl_stub.h" \
+  -DTCL_V65X_QEMU_MODEL_ARMING=1 -static -pthread \
+  "$ROOT/src/core/main.c" "$ROOT/src/core/util.c" "$ROOT/src/core/fops.c" \
+  -o "$OUT/ghostlock-tcl-v65x-qemu-model"
 arm-linux-gnueabihf-gcc $CFLAGS -I"$ROOT/src/core" -I"$ROOT/src/devices" \
   -DTARGET_CONFIG_H='"target.h"' -include "$ROOT/stubs/dl_stub.h" \
   -static -pthread "$ROOT/src/helpers/tcl_v643_mcast_helper.c" \
@@ -27,7 +32,13 @@ aarch64-linux-gnu-gcc $CFLAGS -static \
 cp -f "$OUT/ghostlock-tcl-v643-lab" "$ROOT/ghostlock-tcl-v643-lab"
 cp -f "$OUT/tcl-v643-mcast-helper" "$ROOT/tcl-v643-mcast-helper"
 if command -v file >/dev/null 2>&1; then
-  file "$OUT"/*
+  file "$OUT/ghostlock" "$OUT/ghostlock-tcl-v643-lab" \
+    "$OUT/ghostlock-tcl-v65x-qemu-model" \
+    "$OUT/tcl-root-broker-embedded.o" "$OUT/tcl-v643-mcast-helper" \
+    "$OUT/tcl-v643-uring-perf-probe"
 fi
-sha256sum "$OUT"/* > "$OUT/SHA256SUMS"
+sha256sum "$OUT/ghostlock" "$OUT/ghostlock-tcl-v643-lab" \
+  "$OUT/ghostlock-tcl-v65x-qemu-model" \
+  "$OUT/tcl-root-broker-embedded.o" "$OUT/tcl-v643-mcast-helper" \
+  "$OUT/tcl-v643-uring-perf-probe" > "$OUT/SHA256SUMS"
 cat "$OUT/SHA256SUMS"

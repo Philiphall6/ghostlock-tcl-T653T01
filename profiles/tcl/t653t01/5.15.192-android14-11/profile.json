@@ -85,6 +85,11 @@
     "io_uring_gfp": "0x00442dc0",
     "mm_struct_gfp": "0x00000cc0",
     "pcp_static_semantics_match_v643": true,
+    "shared_newselect_runtime_route_integrated": true,
+    "qemu_surrogate_schema_validated": true,
+    "qemu_surrogate_result": "single witnessed reclaim, ARM32 _newselect carrier, rb_erase write and cleanup passed without panic",
+    "qemu_surrogate_log_sha256": "b07a4021ab165845241e6b5cc0b9c559c4efcd628d1f64a0833ba4b609c072c2",
+    "qemu_surrogate_is_exact_v65x_kernel": false,
     "live_pcp_reclaim_choreography_validated": false,
     "qemu": false,
     "hardware": false
@@ -92,7 +97,7 @@
   "safety": {
     "execution_allowed": false,
     "blockers": [
-      "live PCP/reclaim choreography not validated in instrumented QEMU or on hardware running V65x",
+      "live PCP/reclaim choreography not validated on the exact stock V65x kernel or hardware running V65x; the 5.15.180 semantic surrogate passed",
       "exact TCL 5.15.192 vendor source not published; ReSukiSU candidate uses the published 5.15.180 baseline plus exact target KMI/BTF validation",
       "network, SELinux restoration and cleanup not validated for V65x"
     ]

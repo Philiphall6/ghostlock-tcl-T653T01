@@ -3,6 +3,13 @@
 
 #include <stdint.h>
 
+#if (defined(TCL_V643_LAB_ARMING) && TCL_V643_LAB_ARMING) || \
+    (defined(TCL_V65X_QEMU_MODEL_ARMING) && TCL_V65X_QEMU_MODEL_ARMING)
+#define GHOST_TCL_QEMU_LAB_ARMING 1
+#else
+#define GHOST_TCL_QEMU_LAB_ARMING 0
+#endif
+
 enum ghost_stack_overlay_route {
   GHOST_STACK_OVERLAY_SEQPACKET = 0,
   GHOST_STACK_OVERLAY_TCL_V643_PSELECT6 = 1,
@@ -30,7 +37,21 @@ enum ghost_reclaim_route {
   GHOST_RECLAIM_TCL_V643_EXACT = 2,
   /* Separate fail-closed state for the 5.15.192 V65x family. */
   GHOST_RECLAIM_TCL_V65X_UNPROVEN = 3,
+  /* Reserved execution state for the common T653T01 V65x choreography.
+   * No committed profile selects it yet: promotion from UNPROVEN requires
+   * the dynamic PCP/reclaim and cleanup gates documented by the manifest. */
+  GHOST_RECLAIM_TCL_V65X_EXACT = 4,
 };
+
+static inline int ghost_stack_overlay_is_tcl_newselect(uint8_t route) {
+  return route == GHOST_STACK_OVERLAY_TCL_V643_NEWSELECT_COMPAT ||
+         route == GHOST_STACK_OVERLAY_TCL_V65X_NEWSELECT_COMPAT;
+}
+
+static inline int ghost_reclaim_is_tcl_exact(uint8_t route) {
+  return route == GHOST_RECLAIM_TCL_V643_EXACT ||
+         route == GHOST_RECLAIM_TCL_V65X_EXACT;
+}
 
 struct kernel_offsets {
   const char *uname_r;

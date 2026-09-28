@@ -24,6 +24,9 @@ The three exact images have:
   `mm_struct` slab, and the same order-2 io_uring allocator geometry as V643;
 - exact pageblock order 10 and half-block retag threshold 512, confirmed from
   machine code rather than inferred from the vendor configuration label.
+- a shared V65x runtime route using the ARM32 `_newselect` carrier; and
+- a successful QEMU surrogate cycle covering witnessed reclaim, the
+  `_newselect` carrier, one `rb_erase` write and cleanup without a panic.
 
 An analysis-only ReSukiSU candidate was also rebuilt with the exact target
 vermagic `5.15.192-android14-11`. Its 163 imported symbol CRCs match all three
@@ -38,9 +41,15 @@ hashes individually and does not identify a kernel by release string alone.
 ## Fail-closed profile
 
 The native profile for `5.15.192-android14-11` is committed as
-`analysis_only=1`. It also uses distinct V65x stack/reclaim enum values and an
-unproven reclaim route. Consequently, the ordinary build and the V643 QEMU lab
-arming build both refuse to execute it.
+`analysis_only=1`. It uses the shared TCL ARM32 carrier but retains a distinct,
+unproven V65x reclaim state. Consequently, the ordinary Android build and the
+V643 QEMU lab build both refuse to execute it.
+
+A separate `ghostlock-tcl-v65x-qemu-model` binary can promote that state only
+inside the disposable source-built kernel. It first requires the
+QEMU-exclusive `/dev/glqemu-root` observer, so copying it to Android cannot
+arm the primitive. This binary is neither an APK payload nor a hardware
+release.
 
 The portable manifest is:
 
@@ -54,10 +63,10 @@ blockers.
 
 ## Remaining blockers
 
-1. Validate the live PCP/reclaim choreography in instrumented QEMU or on an
-   owned T653T01 device already running V65x. Static SLUB and allocator
-   geometry are now confirmed, but CPU/zone/PCP state and concurrent drains
-   remain runtime conditions.
+1. Validate the live PCP/reclaim choreography on the exact stock V65x kernel
+   or on an owned T653T01 device already running V65x. The source-built
+   semantic surrogate now passes, but exact CPU/zone/PCP state and concurrent
+   vendor drains remain runtime conditions.
 2. Obtain or independently validate the still-unpublished exact TCL 5.15.192
    vendor source. The current module candidate uses TCL's published 5.15.180
    baseline plus exact target KMI/BTF checks.
@@ -110,6 +119,35 @@ firmware serves several models, so a C855 V643 zone snapshot cannot be treated
 as proof for every model or for V65x. The profile remains `analysis_only` and
 the distinct V65x reclaim enum still refuses execution.
 
+## QEMU surrogate integration gate
+
+The dedicated gate uses TCL's published 5.15.180 source-built laboratory
+kernel after verifying the root-relevant allocator and carrier semantics
+against the exact V655/V665/V667 binaries. On 2026-09-28 it produced:
+
+```text
+TCL capture witness: method=qemu-observer visible=16/16 hits=1 ... verdict=1
+TCL split: erase=1 handler=1 cleanup=1 status=0 failures=0
+GLV65XMODEL PASS: shared reclaim + ARM32 _newselect + rb_erase schema completed
+```
+
+The console log SHA-256 is
+`b07a4021ab165845241e6b5cc0b9c559c4efcd628d1f64a0833ba4b609c072c2`.
+It is stored under
+`11_KERNEL_ANALYSIS_GENERATED/V655_V665_V667_20260927/qemu-v65x-surrogate-20260928-retry2/`.
+
+This proves that the V65x profile plumbing follows the same chain as V643. It
+does not make the surrogate an exact 5.15.192 vendor kernel and therefore
+does not change the profile status to `qemu_validated` or authorize a TV run.
+
+After the shared-route changes, the complete V643 production gate was run
+again as a regression check. It reported a 16/16 reclaim witness,
+`erase=1 handler=1 cleanup=1`, a verified write and the final result
+`GLPROD PASS`, without a kernel panic. Its console log is stored under
+`11_KERNEL_ANALYSIS_GENERATED/V643_20260918/qemu-production-gate-v65x-final-20260928/`
+and has SHA-256
+`eb6878992bb1de3a6a26fb55ac6e449c36b66b65c4a0777d02f2146847b93947`.
+
 ## Static ReSukiSU candidate
 
 The reproducible build entry point is kept in the separate ReSukiSU tree:
@@ -131,9 +169,11 @@ APK integration or device deployment is provided for this candidate.
 
 ```sh
 make profile-guard-test profile-manifest-test \
-  tcl-v65x-reclaim-static-model-test
+  tcl-v65x-reclaim-static-model-test tcl-v65x-runtime-offsets-test
 make NDK_ROOT=/path/to/android-ndk ghostlock
 qemu-aarch64 ./ghostlock --profile-info 5.15.192-android14-11
+./tools/build-qemu-lab.sh
+./tools/run-qemu-v65x-surrogate.sh
 ```
 
 Expected final line:

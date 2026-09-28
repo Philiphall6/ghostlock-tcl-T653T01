@@ -11,7 +11,7 @@ SRCS := \
 
 PROFILE_DEPS := \
   src/devices/offsets.h \
-  src/devices/target.h \
+  src/core/target.h \
   $(wildcard src/devices/*/offsets.h)
 
 CFLAGS := -O2 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function \
@@ -25,7 +25,7 @@ LDFLAGS := -static -pthread
 	tcl-v643-pselect-rounds-model-test \
 	tcl-v643-pselect-semantics-test tcl-v643-runtime-offsets-test \
 	tcl-v643-slub-reclaim-model-test tcl-v643-io-uring-pcp-model-test \
-	tcl-v65x-reclaim-static-model-test \
+	tcl-v65x-reclaim-static-model-test tcl-v65x-runtime-offsets-test \
 	tcl-v643-compat-select-model-test tcl-v643-direct-primitive-model-test \
 	tcl-v643-kaslr-model-test tcl-v643-mcast-geometry-test \
 	tcl-v643-mcast-carrier-test tcl-v643-mcast-helper \
@@ -126,6 +126,13 @@ tcl-v643-io-uring-pcp-model-test:
 tcl-v65x-reclaim-static-model-test:
 	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v65x_reclaim_static_model.c -o /tmp/tcl-v65x-reclaim-static-model
 	/tmp/tcl-v65x-reclaim-static-model
+
+# Host-only integration check for the T653T01 V65x profile. It verifies that
+# the runtime macros and shared ARM32 carrier resolve to V65x values while the
+# unproved reclaim state remains unable to select the executable route.
+tcl-v65x-runtime-offsets-test:
+	$(CC) -O2 -Wall -Isrc/core -Isrc/devices tests/tcl_v65x_runtime_offsets.c -o /tmp/tcl-v65x-runtime-offsets
+	/tmp/tcl-v65x-runtime-offsets
 
 # Host-only coordinate model for the ARM32 compat select route recovered from
 # the exact V643 image.  It issues no syscall and does not build the exploit.

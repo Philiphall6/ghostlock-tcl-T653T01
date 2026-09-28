@@ -1289,7 +1289,7 @@ static void do_tcl_v643_mcast_compat_route(void) {
   pr_warning("TCL MCAST route requires the not-yet-integrated AArch32 waiter/helper; refusing AArch64 fallback\n");
 }
 
-static void do_tcl_v643_newselect_compat_route(void) {
+static void do_tcl_newselect_compat_route(void) {
   cfi_last_step = 138;
   cfi_last_errno = ENOTSUP;
   pr_warning("TCL _newselect route is owned by the split-ABI coordinator; refusing same-process fallback\n");
@@ -1321,15 +1321,15 @@ void do_pselect_fake_lock_route(void) {
     return;
   }
   if (active_offsets &&
-      active_offsets->stack_overlay_route ==
-          GHOST_STACK_OVERLAY_TCL_V643_NEWSELECT_COMPAT) {
+      ghost_stack_overlay_is_tcl_newselect(
+          active_offsets->stack_overlay_route)) {
     if (active_offsets->analysis_only) {
       cfi_last_step = 129;
       cfi_last_errno = EPERM;
       pr_warning("TCL _newselect ARM32 route refused: analysis-only profile\n");
       return;
     }
-    do_tcl_v643_newselect_compat_route();
+    do_tcl_newselect_compat_route();
     return;
   }
   do_seqpacket_fake_lock_route();

