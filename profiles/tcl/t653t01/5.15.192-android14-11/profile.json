@@ -90,6 +90,23 @@
     "qemu_surrogate_result": "single witnessed reclaim, ARM32 _newselect carrier, rb_erase write and cleanup passed without panic",
     "qemu_surrogate_log_sha256": "b07a4021ab165845241e6b5cc0b9c559c4efcd628d1f64a0833ba4b609c072c2",
     "qemu_surrogate_is_exact_v65x_kernel": false,
+    "selinux_precompiled_policy": {
+      "V655": {
+        "size": 1044927,
+        "sha256": "05910147a35a431e7fd12eb6e9d872a82002c6794cb929d4139c88df3d61b83d"
+      },
+      "V665": {
+        "size": 1045234,
+        "sha256": "8386bc2d38e3909c81eb9fc079d3acb7fa2f1271c77b02698091e35a7f61ed3c"
+      },
+      "V667": {
+        "size": 1045234,
+        "sha256": "8386bc2d38e3909c81eb9fc079d3acb7fa2f1271c77b02698091e35a7f61ed3c"
+      }
+    },
+    "selinux_policy_header": "magic=f97cff8c version=30 config=c0000001",
+    "selinux_android_netlink_route_getneigh_bits_present": true,
+    "selinux_policy_restore_material_available_offline": true,
     "live_pcp_reclaim_choreography_validated": false,
     "qemu": false,
     "hardware": false

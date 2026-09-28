@@ -72,6 +72,20 @@ blockers.
    baseline plus exact target KMI/BTF checks.
 3. Validate network, SELinux restoration and cleanup before any device test.
 
+The immutable policy material needed for that third gate is now available.
+The exact `vendor` EROFS images were reconstructed and extracted offline:
+
+| Build | Policy size | SHA-256 |
+|---|---:|---|
+| V655 | 1,044,927 | `05910147a35a431e7fd12eb6e9d872a82002c6794cb929d4139c88df3d61b83d` |
+| V665 | 1,045,234 | `8386bc2d38e3909c81eb9fc079d3acb7fa2f1271c77b02698091e35a7f61ed3c` |
+| V667 | 1,045,234 | `8386bc2d38e3909c81eb9fc079d3acb7fa2f1271c77b02698091e35a7f61ed3c` |
+
+All three use policy version 30 and configuration `0xc0000001`, preserving
+both Android netlink route/getneigh flags required by the V643 recovery path.
+This permits exact per-firmware guards to be built; it is not a live proof
+that post-write restoration and networking succeed on 5.15.192.
+
 The physical-load item is closed offline. In V655, V665 and V667, all 13
 packaged memory-map overlays set the `MI_KERNEL_POOL1` base to `0x26000000`.
 Each exact `vendor_boot.img` has `kernel_addr=0`, each ARM64 Image has
