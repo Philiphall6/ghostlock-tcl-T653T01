@@ -25,6 +25,7 @@ LDFLAGS := -static -pthread
 	tcl-v643-pselect-rounds-model-test \
 	tcl-v643-pselect-semantics-test tcl-v643-runtime-offsets-test \
 	tcl-v643-slub-reclaim-model-test tcl-v643-io-uring-pcp-model-test \
+	tcl-v65x-reclaim-static-model-test \
 	tcl-v643-compat-select-model-test tcl-v643-direct-primitive-model-test \
 	tcl-v643-kaslr-model-test tcl-v643-mcast-geometry-test \
 	tcl-v643-mcast-carrier-test tcl-v643-mcast-helper \
@@ -118,6 +119,13 @@ tcl-v643-slub-reclaim-model-test:
 tcl-v643-io-uring-pcp-model-test:
 	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v643_io_uring_pcp_model.c -o /tmp/tcl-v643-io-uring-pcp-model
 	/tmp/tcl-v643-io-uring-pcp-model
+
+# Host-only validation of static allocator constants recovered from all three
+# T653T01 V65x kernels. It deliberately asserts that live PCP choreography is
+# still unvalidated and cannot arm any primitive.
+tcl-v65x-reclaim-static-model-test:
+	$(CC) -O2 -Wall -Isrc/devices tests/tcl_v65x_reclaim_static_model.c -o /tmp/tcl-v65x-reclaim-static-model
+	/tmp/tcl-v65x-reclaim-static-model
 
 # Host-only coordinate model for the ARM32 compat select route recovered from
 # the exact V643 image.  It issues no syscall and does not build the exploit.

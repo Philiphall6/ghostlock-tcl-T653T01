@@ -6,7 +6,9 @@
  *
  * This entry is intentionally analysis-only.  The physical load address is
  * proven offline from every packaged DTBO map, vendor_boot and each matching
- * mboot implementation.  The live reclaim/SLUB route is not yet proven.
+ * mboot implementation.  The static SLUB thresholds, io_uring allocation
+ * geometry, pageblock rules and PCP code paths are also recovered exactly.
+ * The live PCP/reclaim choreography is not yet proven.
  * GHOST_RECLAIM_TCL_V65X_UNPROVEN is a second safety
  * barrier: even a build with TCL_V643_LAB_ARMING cannot accept this profile.
  */

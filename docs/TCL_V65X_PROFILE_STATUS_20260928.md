@@ -20,6 +20,10 @@ The three exact images have:
 - the vulnerable `remove_waiter()` condition still present;
 - 163/163 ReSukiSU imported-symbol CRCs compatible with the existing source.
 - an offline-proven physical kernel `_text` load address of `0x26000000`.
+- exact static SLUB thresholds (`min_partial=5`, `cpu_partial=6`), an order-2
+  `mm_struct` slab, and the same order-2 io_uring allocator geometry as V643;
+- exact pageblock order 10 and half-block retag threshold 512, confirmed from
+  machine code rather than inferred from the vendor configuration label.
 
 An analysis-only ReSukiSU candidate was also rebuilt with the exact target
 vermagic `5.15.192-android14-11`. Its 163 imported symbol CRCs match all three
@@ -50,7 +54,10 @@ blockers.
 
 ## Remaining blockers
 
-1. Re-run the exact SLUB/reclaim route in instrumented QEMU.
+1. Validate the live PCP/reclaim choreography in instrumented QEMU or on an
+   owned T653T01 device already running V65x. Static SLUB and allocator
+   geometry are now confirmed, but CPU/zone/PCP state and concurrent drains
+   remain runtime conditions.
 2. Obtain or independently validate the still-unpublished exact TCL 5.15.192
    vendor source. The current module candidate uses TCL's published 5.15.180
    baseline plus exact target KMI/BTF checks.
@@ -77,6 +84,32 @@ V65x ELF.
 Until every blocker is closed, V655/V665/V667 remain unsupported and no APK or
 ADB release should offer a root button for them.
 
+## Static reclaim audit
+
+All three V65x embedded configurations are byte-identical and have SHA-256
+`2b1df3e8c81a2603e0fd771c32da2588149b4e5701cb82f2271109429bb93fbd`.
+Their embedded BTF is also identical. `mm_cache_init()` requests 984 bytes,
+which SLUB rounds to a 1024-byte stride; `__kmem_cache_create()` stores
+`min_partial=5` and `cpu_partial=6`.
+
+`put_cpu_partial()`, `__unfreeze_partials()` and `discard_slab()` are
+instruction-identical across V655, V665 and V667. Other relevant allocator
+functions have identical control flow; their few differing instruction words
+only materialize firmware-specific diagnostic strings. The exact evidence is
+recorded in `V655-V665-V667-reclaim-functions.csv` and
+`T653T01-V65x-reclaim-static-audit.md` in the generated analysis directory.
+
+The configuration contains `CONFIG_PAGE_BLOCK_ORDER=11`, but this is not the
+compiled migration pageblock order. HugeTLB is disabled and
+`CONFIG_FORCE_MAX_ZONEORDER=11`; exact `move_freepages_block()` code masks a
+1024-page block (`~0x3ff`) and exact fallback code uses a 512-page threshold
+(`0x1ff`). The effective pageblock order is therefore 10.
+
+This closes the missing static geometry, not the live choreography. T653T01
+firmware serves several models, so a C855 V643 zone snapshot cannot be treated
+as proof for every model or for V65x. The profile remains `analysis_only` and
+the distinct V65x reclaim enum still refuses execution.
+
 ## Static ReSukiSU candidate
 
 The reproducible build entry point is kept in the separate ReSukiSU tree:
@@ -97,7 +130,8 @@ APK integration or device deployment is provided for this candidate.
 ## Host validation
 
 ```sh
-make profile-guard-test profile-manifest-test
+make profile-guard-test profile-manifest-test \
+  tcl-v65x-reclaim-static-model-test
 make NDK_ROOT=/path/to/android-ndk ghostlock
 qemu-aarch64 ./ghostlock --profile-info 5.15.192-android14-11
 ```

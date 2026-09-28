@@ -68,13 +68,31 @@
     "compat_select_stack_frames_match_v643": true,
     "kernel_phys_load": "0x26000000",
     "kernel_phys_load_evidence": "13/13 DTBO memory maps per firmware use MI_KERNEL_POOL1 base 0x26000000; vendor_boot kernel_addr and ARM64 Image text_offset are zero; each V65x mboot implements the same base-plus-offset calculation",
+    "embedded_config_sha256": "2b1df3e8c81a2603e0fd771c32da2588149b4e5701cb82f2271109429bb93fbd",
+    "embedded_config_identical_across_v65x": true,
+    "slub_static_semantics_validated": true,
+    "slub_min_partial": 5,
+    "slub_cpu_partial": 6,
+    "mm_struct_stride": 1024,
+    "mm_struct_slab_order": 2,
+    "pageblock_order": 10,
+    "pageblock_pages": 1024,
+    "pageblock_retag_threshold": 512,
+    "io_uring_entries_model": 256,
+    "io_uring_rings_bytes": 9536,
+    "io_uring_sqes_bytes": 16384,
+    "io_uring_backing_order": 2,
+    "io_uring_gfp": "0x00442dc0",
+    "mm_struct_gfp": "0x00000cc0",
+    "pcp_static_semantics_match_v643": true,
+    "live_pcp_reclaim_choreography_validated": false,
     "qemu": false,
     "hardware": false
   },
   "safety": {
     "execution_allowed": false,
     "blockers": [
-      "SLUB/reclaim choreography not validated in instrumented QEMU",
+      "live PCP/reclaim choreography not validated in instrumented QEMU or on hardware running V65x",
       "exact TCL 5.15.192 vendor source not published; ReSukiSU candidate uses the published 5.15.180 baseline plus exact target KMI/BTF validation",
       "network, SELinux restoration and cleanup not validated for V65x"
     ]
