@@ -7,6 +7,9 @@
     <string name="action_root">3 — TCL ROOT + RESUKISU — TEMPORARY</string>
     <string name="action_open_manager">4 — OPEN RESUKISU MANAGER</string>
     <string name="action_stop_root">5 — STOP ROOT — REBOOT TV</string>
+    <string name="action_auto_root_requires_root">6 — AUTO ROOT AT STARTUP — ROOT REQUIRED</string>
+    <string name="action_auto_root_off">6 — AUTO ROOT AT STARTUP — OFF</string>
+    <string name="action_auto_root_on">6 — AUTO ROOT AT STARTUP — ON</string>
     <string name="chain_notice">Direct chain: V643 checks, GhostLock UID 0, ReSukiSU handoff during the permissive window, then network/SELinux restoration. One attempt per boot.</string>
     <string name="adb_key_generating">Generating/loading the dedicated ADB key…\nAndroid may display an authorization prompt: accept it only after pressing this button.</string>
     <string name="root_starting">Running V643 checks before the temporary-root chain…</string>
@@ -16,4 +19,23 @@
     <string name="cancel">Cancel</string>
     <string name="reboot">Reboot</string>
     <string name="stopping_root">Stopping temporary root by rebooting…</string>
+    <string name="enable">Enable</string>
+    <string name="auto_root_checking">Checking this app’s root grant, the exact V643 profile and local ADB…</string>
+    <string name="auto_root_refused">AUTO ROOT REFUSED — the app does not currently have a fully validated V643 root session.</string>
+    <string name="auto_root_confirm_title">Enable automatic root at startup?</string>
+    <string name="auto_root_confirm_message">This will run the exact V643 GhostLock/ReSukiSU chain in a foreground service after Android boots. Root remains temporary. A kernel exploit can crash or reboot the TV. Only one attempt is permitted per boot; an incomplete attempt automatically disables this option at the following boot.</string>
+    <string name="auto_root_enabled">AUTOMATIC ROOT ENABLED FOR EXACT V643 ONLY. It will run after the next complete Android boot.</string>
+    <string name="auto_root_disabled">AUTOMATIC ROOT DISABLED.</string>
+    <string name="auto_root_store_failed">AUTOMATIC ROOT NOT ENABLED — the preference could not be stored.</string>
+    <string name="auto_root_channel">TCL temporary root</string>
+    <string name="auto_root_channel_description">Status of the opt-in V643 automatic temporary-root worker</string>
+    <string name="auto_root_notification_title">TCL T653T01 temporary root</string>
+    <string name="auto_root_notification_waiting">Waiting for Android and local ADB</string>
+    <string name="auto_root_notification_preflight">Checking the exact V643 safety profile</string>
+    <string name="auto_root_notification_success">Temporary V643 root is active</string>
+    <string name="auto_root_notification_disabled">Automatic root is disabled</string>
+    <string name="auto_root_notification_safety_disabled">Disabled after an incomplete previous attempt</string>
+    <string name="auto_root_notification_already_attempted">No second attempt is allowed during this boot</string>
+    <string name="auto_root_notification_preflight_refused">Stopped safely before starting GhostLock</string>
+    <string name="auto_root_notification_failed_disarm_next">Root was not validated; the next boot will disable automation</string>
 </resources>

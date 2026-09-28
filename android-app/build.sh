@@ -89,13 +89,13 @@ aapt2 link -o "$UNSIGNED" -I "$PLATFORM" --auto-add-overlay \
   --java "$GENERATED" \
   --manifest "$ROOT/AndroidManifest.xml" \
   --min-sdk-version 23 --target-sdk-version 35 \
-  --version-code 100 --version-name 1.0
+  --version-code 110 --version-name 1.1.0-pre3
 
 javac -encoding UTF-8 -source 8 -target 8 \
   -classpath "$PLATFORM" -d "$CLASSES" \
   "$ADBLIB_ROOT"/src/main/java/com/tananaev/adblib/*.java \
   "$GENERATED/lab/tcl/rootverifier/R.java" \
-  "$ROOT/src/lab/tcl/rootverifier/MainActivity.java"
+  "$ROOT"/src/lab/tcl/rootverifier/*.java
 
 jar cf "$OUT/classes.jar" -C "$CLASSES" .
 "$BUILD_TOOLS/d8" --lib "$PLATFORM" --min-api 23 \
@@ -133,9 +133,21 @@ cp "$RESUKISU_MODULE" "$PAYLOAD/libtclresukisumodule.so"
 "$NDK_CC32" -O2 -Wall -Wextra -Werror -static -I"$OUT" \
   "$ROOT/broker/resukisu_kernel_preflight.c" \
   -o "$PAYLOAD/libtclresukisupreflight.so"
+# The shared V6xx source uses neutral helper names.  Keep the released V643
+# symbol names for a byte-identical, hardware-validated handoff payload.
 "$NDK_CC32" -O2 -Wall -Wextra -Werror -static \
+  -Dverify_tcl_policy_header=verify_v643_policy_header \
+  -Dverify_tcl_policycaps=verify_v643_policycaps \
   "$ROOT/broker/tcl_resukisu_handoff.c" \
   -o "$PAYLOAD/libtclresukisuhandoff.so"
+EXPECTED_V643_HANDOFF_SHA256=e519266c0a9774b63e48c8df7c813284073c320314121952bae18ecbfd5fd299
+ACTUAL_V643_HANDOFF_SHA256=$(sha256sum \
+  "$PAYLOAD/libtclresukisuhandoff.so" | awk '{print $1}')
+if [ "$ACTUAL_V643_HANDOFF_SHA256" != "$EXPECTED_V643_HANDOFF_SHA256" ]; then
+  printf 'Refusing unpinned V643 handoff: expected %s, found %s\n' \
+    "$EXPECTED_V643_HANDOFF_SHA256" "$ACTUAL_V643_HANDOFF_SHA256" >&2
+  exit 2
+fi
 chmod 755 "$PAYLOAD"/*.so
 jar uf "$UNSIGNED" -C "$OUT/apk-payload" lib
 zipalign -f 4 "$UNSIGNED" "$ALIGNED"

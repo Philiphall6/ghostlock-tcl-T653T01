@@ -7,6 +7,30 @@ owner-authorized local ADB connection, and hands the temporary UID-0 process
 directly to the TCL ReSukiSU loader. Root is volatile and disappears after a
 reboot.
 
+## Optional automatic V643 session
+
+The sixth TV button is always visible. It is grey and cannot be selected while
+the option is off and this app has no validated root grant. It becomes
+selectable only after all of the following are observed in the current
+session:
+
+- this app's real `su -c id` result is UID 0;
+- the volatile ReSukiSU driver answers;
+- firmware/kernel are exactly V643 / `5.15.180-android14-11`;
+- AVB is green/locked, verity and SELinux are enforcing;
+- the V643 SELinux policy and loaded module match;
+- the app's dedicated local-ADB key still works.
+
+After confirmation, Android's `BOOT_COMPLETED` broadcast starts a visible
+foreground service. The worker repeats the exact V643 checks and permits one
+attempt per boot. It never enables V637/V655/V665/V667. If an attempt is
+interrupted before it reports success, a persistent latch disables automation
+at the following boot. The worker does not automatically reboot the TV.
+
+An already enabled option remains selectable even without root, so it can
+always be turned off. The root itself is still volatile and disappears on
+reboot; only the user's opt-in preference persists.
+
 ## Required ReSukiSU fork
 
 This app intentionally supports only
@@ -68,3 +92,9 @@ The v1.0 profile is restricted to TCL T653T01 V643, Android 14, kernel
 fresh boot with no root module already loaded. It permits one attempt per boot.
 It does not flash, unlock the bootloader, patch `boot.img` or VBMeta, or write
 to a partition.
+
+Run the static automation guard test with:
+
+```sh
+./android-app/tests/test_auto_root_safety.sh
+```

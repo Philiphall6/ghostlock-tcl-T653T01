@@ -96,6 +96,7 @@ public final class MainActivity extends Activity {
     private Button openReSukiSu;
     private Button stopRoot;
     private Button rebootStopReSukiSu;
+    private Button autoRoot;
     private EditText explorerPath;
     private Button explorerParent;
     private Button explorerList;
@@ -110,6 +111,7 @@ public final class MainActivity extends Activity {
     private static volatile boolean rootStarting;
     private static volatile boolean guidedRunning;
     private static volatile boolean resukisuActive;
+    private boolean firstResume = true;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -169,6 +171,14 @@ public final class MainActivity extends Activity {
         rebootStopReSukiSu.setOnClickListener(v -> confirmRebootStopReSukiSu());
         root.addView(rebootStopReSukiSu);
 
+        autoRoot = new Button(this);
+        autoRoot.setTextSize(18);
+        autoRoot.setGravity(Gravity.CENTER);
+        styleButton(autoRoot);
+        autoRoot.setOnClickListener(v -> toggleAutoRoot());
+        root.addView(autoRoot);
+        updateAutoRootButton(false);
+
         TextView notice = new TextView(this);
         notice.setText(R.string.chain_notice);
         notice.setTextColor(Color.rgb(190, 220, 255));
@@ -193,6 +203,19 @@ public final class MainActivity extends Activity {
         runChecks();
         if (getIntent().getBooleanExtra("autoconnect", false))
             waitForBroker();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (firstResume) {
+            firstResume = false;
+        } else if (result != null && refresh != null && refresh.isEnabled()) {
+            /* Returning from ReSukiSU Manager is the usual point at which this
+             * app has just received its own su grant.  Re-check and unlock the
+             * auto-root control only after that grant is actually observable. */
+            runChecks();
+        }
     }
 
     private Button explorerButton(String label, View.OnClickListener action) {
@@ -256,6 +279,123 @@ public final class MainActivity extends Activity {
                 adbKey.requestFocus();
             });
         }, "local-adb-auth").start();
+    }
+
+    private void updateAutoRootButton(boolean appRootValidated) {
+        if (autoRoot == null) return;
+        boolean enabled = AutoRootState.isEnabled(this);
+        if (enabled) {
+            autoRoot.setText(R.string.action_auto_root_on);
+            /* Keeping an armed option selectable even without root is an
+             * intentional safety escape hatch: it can always be turned off. */
+            autoRoot.setEnabled(true);
+        } else if (appRootValidated) {
+            autoRoot.setText(R.string.action_auto_root_off);
+            autoRoot.setEnabled(true);
+        } else {
+            autoRoot.setText(R.string.action_auto_root_requires_root);
+            autoRoot.setEnabled(false);
+        }
+    }
+
+    private void toggleAutoRoot() {
+        if (AutoRootState.isEnabled(this)) {
+            AutoRootState.disable(this, "Disabled manually from the TV app");
+            audit("AUTO_ROOT_DISABLED_BY_USER");
+            updateAutoRootButton(false);
+            result.setText(R.string.auto_root_disabled);
+            autoRoot.requestFocus();
+            return;
+        }
+
+        autoRoot.setEnabled(false);
+        result.setText(R.string.auto_root_checking);
+        new Thread(() -> {
+            String proof = validateAutoRootEligibility();
+            boolean allowed = proof.startsWith("AUTO_ROOT_ELIGIBLE\n");
+            runOnUiThread(() -> {
+                if (!allowed) {
+                    result.setText(getString(R.string.auto_root_refused)
+                            + "\n\n" + proof);
+                    updateAutoRootButton(false);
+                    return;
+                }
+                new AlertDialog.Builder(this)
+                        .setTitle(R.string.auto_root_confirm_title)
+                        .setMessage(R.string.auto_root_confirm_message)
+                        .setNegativeButton(R.string.cancel, (dialog, which) -> {
+                            updateAutoRootButton(true);
+                            autoRoot.requestFocus();
+                        })
+                        .setPositiveButton(R.string.enable, (dialog, which) -> {
+                            boolean stored = AutoRootState
+                                    .enableForValidatedV643(this);
+                            audit("AUTO_ROOT_ENABLE stored=" + stored);
+                            updateAutoRootButton(stored);
+                            result.setText(stored
+                                    ? R.string.auto_root_enabled
+                                    : R.string.auto_root_store_failed);
+                            autoRoot.requestFocus();
+                        })
+                        .show();
+            });
+        }, "auto-root-eligibility").start();
+    }
+
+    private String validateAutoRootEligibility() {
+        File ksud = new File(getApplicationInfo().nativeLibraryDir,
+                "libresukisuksud.so");
+        String driver = commandWithTimeout(new String[]{
+                ksud.getAbsolutePath(), "debug", "version"}, 5);
+        String rootProbe = commandWithTimeout(new String[]{
+                "/system/bin/sh", "-c",
+                "su -c 'printf \"ROOT_ID=\"; id; "
+                        + "printf \"STATE=%s|%s|%s|%s|%s|%s|%s\\n\" "
+                        + "\"$(getprop ro.software.version_id)\" "
+                        + "\"$(uname -r)\" "
+                        + "\"$(getprop ro.build.version.release)\" "
+                        + "\"$(getprop ro.boot.verifiedbootstate)\" "
+                        + "\"$(getprop ro.boot.vbmeta.device_state)\" "
+                        + "\"$(getprop ro.boot.veritymode)\" "
+                        + "\"$(getenforce)\"; "
+                        + "printf \"POLICY_SHA=\"; sha256sum "
+                        + "/vendor/etc/selinux/precompiled_sepolicy "
+                        + "| cut -d\" \" -f1; "
+                        + "printf \"POLICY_SIZE=\"; wc -c < "
+                        + "/vendor/etc/selinux/precompiled_sepolicy "
+                        + "| tr -d \" \"; "
+                        + "printf \"MODULE=\"; grep -Ec \"^kernelsu \" "
+                        + "/proc/modules 2>/dev/null || true'"}, 12);
+        String adb = runLocalAdbShell("echo ADB_LOCAL_OK", 15);
+        String expected = "STATE=V8-T653T01-LF1V643|"
+                + "5.15.180-android14-11|14|green|locked|enforcing|Enforcing";
+        boolean root = rootProbe.contains("ROOT_ID=uid=0");
+        boolean exactProfile = rootProbe.contains(expected)
+                && rootProbe.contains("POLICY_SHA=" + V643_POLICY_SHA256)
+                && rootProbe.contains("POLICY_SIZE=" + V643_POLICY_SIZE)
+                && rootProbe.contains("MODULE=1");
+        boolean driverActive = driver.contains("Kernel Version:");
+        boolean adbReady = adb.contains("ADB_LOCAL_OK");
+        if (root && exactProfile && driverActive && adbReady)
+            return "AUTO_ROOT_ELIGIBLE\n" + rootProbe
+                    + "\nDRIVER=" + driver + "\n" + adb;
+        return "AUTO_ROOT_NOT_ELIGIBLE"
+                + "\napp_su_uid0=" + root
+                + "\nexact_v643_profile=" + exactProfile
+                + "\nvolatile_driver=" + driverActive
+                + "\nlocal_adb=" + adbReady
+                + "\n\n" + rootProbe
+                + "\n\n" + driver + "\n\n" + adb;
+    }
+
+    private boolean appHasValidatedRoot() {
+        File ksud = new File(getApplicationInfo().nativeLibraryDir,
+                "libresukisuksud.so");
+        String su = commandWithTimeout(new String[]{
+                "/system/bin/sh", "-c", "su -c /system/bin/id"}, 4);
+        String driver = commandWithTimeout(new String[]{
+                ksud.getAbsolutePath(), "debug", "version"}, 4);
+        return su.contains("uid=0") && driver.contains("Kernel Version:");
     }
 
     private String testLocalAdb() {
@@ -502,9 +642,11 @@ public final class MainActivity extends Activity {
             final String finalOutcome = outcome;
             final boolean finalActive = active;
             final boolean finalAttempted = attempted;
+            final boolean finalAppRoot = finalActive && appHasValidatedRoot();
             rootStarting = false;
             runOnUiThread(() -> {
                 startRoot.setEnabled(!finalActive && !finalAttempted);
+                updateAutoRootButton(finalAppRoot);
                 result.setText(finalOutcome);
             });
         }, "adb-ghostlock").start();
@@ -603,12 +745,14 @@ public final class MainActivity extends Activity {
                 guidedRunning = false;
                 final boolean finalActive = active;
                 final String finalFailure = failure;
+                final boolean finalAppRoot = finalActive && appHasValidatedRoot();
                 runOnUiThread(() -> {
                     guidedRoot.setEnabled(ROOT_ROUTE_VALIDATED);
                     startRoot.setEnabled(ROOT_ROUTE_VALIDATED && !finalActive);
                     loadReSukiSu.setEnabled(false);
                     stopRoot.setEnabled(false);
                     setExplorerEnabled(false);
+                    updateAutoRootButton(finalAppRoot);
                     if (finalFailure != null) {
                         result.setText("ALL-IN-ONE STOPPED WITHOUT CONTINUING\n\n"
                                 + finalFailure);
@@ -1313,6 +1457,9 @@ public final class MainActivity extends Activity {
         result.setText("Verification in progress…");
         new Thread(() -> {
             final String report = buildReport();
+            final boolean appRootValidated = report.contains(
+                            "ROOT AVAILABLE THROUGH SU: YES")
+                    && report.contains("VOLATILE ROOT DRIVER ACTIVE: YES");
             runOnUiThread(() -> {
                 result.setText(report);
                 refresh.setEnabled(true);
@@ -1320,6 +1467,7 @@ public final class MainActivity extends Activity {
                 boolean attemptConsumed = rootAttemptConsumedThisBoot();
                 startRoot.setEnabled(ROOT_ROUTE_VALIDATED && !active
                         && !rootStarting && !attemptConsumed);
+                updateAutoRootButton(appRootValidated);
                 refresh.requestFocus();
             });
         }, "root-verifier").start();
@@ -1470,6 +1618,11 @@ public final class MainActivity extends Activity {
                 + "ReSukiSU v1.0 exact.\n");
         out.append("adbd remains UID 2000; global root is provided by su/ReSukiSU.\n");
         out.append("The STOP button closes the session and then reboots the TV.\n");
+        out.append("Automatic root at boot: ")
+                .append(AutoRootState.isEnabled(this) ? "ON" : "OFF")
+                .append('\n');
+        out.append("Auto-root last status: ")
+                .append(AutoRootState.lastStatus(this)).append('\n');
         String audit = readFile(new File(getFilesDir(), "root-session-audit.log").getAbsolutePath());
         if (!audit.startsWith("inaccessible")) {
             if (audit.length() > 3000) audit = audit.substring(audit.length() - 3000);

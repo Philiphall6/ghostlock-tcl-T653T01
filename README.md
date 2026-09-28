@@ -43,6 +43,12 @@ The APK provides an English/French TV interface, device checks, local ADB
 authorization and the temporary GhostLock-to-ReSukiSU handoff. Install the TCL
 ReSukiSU manager first, then install and open the GhostLock APK.
 
+The v1.1 source also contains an optional V643-only auto-root control. It stays
+grey until this application itself has a validated `su` UID 0 grant and the
+exact V643/AVB/SELinux/local-ADB profile is confirmed. Enabling it schedules
+one volatile attempt after `BOOT_COMPLETED`; an incomplete attempt disarms the
+next boot instead of creating a reboot loop.
+
 See [android-app/README.md](android-app/README.md) for the controls and setup.
 
 ### ADB command line
@@ -57,7 +63,8 @@ See [docs/ADB_EDITION.md](docs/ADB_EDITION.md) for usage.
 - Supported build: TCL T653T01 V643 only; hardware validation was performed on
   a C855.
 - No firmware flashing, Fastboot operation or bootloader unlock.
-- No persistent root or boot-time installation.
+- No persistent kernel/partition modification. Optional boot automation only
+  re-runs the volatile V643 chain after explicit in-app opt-in.
 - Rebooting ends the root session.
 - Other firmware versions require separate validation.
 
@@ -68,8 +75,8 @@ ADB-only pre-release provides separate guarded bundles for exact V637 and
 V655/V665/V667 builds. None of those matching firmware versions has been
 tested on real hardware. They may cause a kernel panic, reboot, network/ADB
 loss or require a power cycle. The ordinary build remains fail-closed, both
-profiles remain `analysis_only`, and there is no APK or boot auto-root for
-these experimental builds.
+profiles remain `analysis_only`, and the APK/boot auto-root remains strictly
+blocked for these experimental builds.
 
 V637 has high offline compatibility with V643: identical BTF/configuration,
 28/28 matching critical offsets, 163/163 ReSukiSU CRCs and an identical

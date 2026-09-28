@@ -7,6 +7,9 @@
     <string name="action_root">3 — ROOT TCL + RESUKISU — TEMPORAIRE</string>
     <string name="action_open_manager">4 — OUVRIR LE GESTIONNAIRE RESUKISU</string>
     <string name="action_stop_root">5 — ARRÊTER LE ROOT — REDÉMARRER LA TV</string>
+    <string name="action_auto_root_requires_root">6 — ROOT AUTO AU DÉMARRAGE — ROOT REQUIS</string>
+    <string name="action_auto_root_off">6 — ROOT AUTO AU DÉMARRAGE — DÉSACTIVÉ</string>
+    <string name="action_auto_root_on">6 — ROOT AUTO AU DÉMARRAGE — ACTIVÉ</string>
     <string name="chain_notice">Chaîne directe : contrôles V643, GhostLock UID 0, transfert à ReSukiSU pendant la fenêtre permissive, puis restauration du réseau et de SELinux. Une seule tentative par démarrage.</string>
     <string name="adb_key_generating">Génération/chargement de la clé ADB dédiée…\nAndroid peut afficher une demande d’autorisation : acceptez-la uniquement après avoir appuyé sur ce bouton.</string>
     <string name="root_starting">Vérification V643 avant la chaîne de root temporaire…</string>
@@ -16,4 +19,23 @@
     <string name="cancel">Annuler</string>
     <string name="reboot">Redémarrer</string>
     <string name="stopping_root">Arrêt du root temporaire par redémarrage…</string>
+    <string name="enable">Activer</string>
+    <string name="auto_root_checking">Vérification du droit root de cette application, du profil V643 exact et d’ADB local…</string>
+    <string name="auto_root_refused">ROOT AUTO REFUSÉ — l’application ne dispose pas actuellement d’une session root V643 entièrement validée.</string>
+    <string name="auto_root_confirm_title">Activer le root automatique au démarrage ?</string>
+    <string name="auto_root_confirm_message">La chaîne GhostLock/ReSukiSU V643 exacte sera lancée par un service au premier plan après le démarrage d’Android. Le root reste temporaire. Un exploit noyau peut faire planter ou redémarrer la TV. Une seule tentative est permise par démarrage ; une tentative incomplète désactivera automatiquement cette option au démarrage suivant.</string>
+    <string name="auto_root_enabled">ROOT AUTOMATIQUE ACTIVÉ POUR LA V643 EXACTE UNIQUEMENT. Il sera lancé après le prochain démarrage complet d’Android.</string>
+    <string name="auto_root_disabled">ROOT AUTOMATIQUE DÉSACTIVÉ.</string>
+    <string name="auto_root_store_failed">ROOT AUTOMATIQUE NON ACTIVÉ — impossible d’enregistrer le réglage.</string>
+    <string name="auto_root_channel">Root temporaire TCL</string>
+    <string name="auto_root_channel_description">État du service optionnel de root temporaire automatique V643</string>
+    <string name="auto_root_notification_title">Root temporaire TCL T653T01</string>
+    <string name="auto_root_notification_waiting">Attente d’Android et d’ADB local</string>
+    <string name="auto_root_notification_preflight">Vérification du profil de sécurité V643 exact</string>
+    <string name="auto_root_notification_success">Le root temporaire V643 est actif</string>
+    <string name="auto_root_notification_disabled">Le root automatique est désactivé</string>
+    <string name="auto_root_notification_safety_disabled">Désactivé après une précédente tentative incomplète</string>
+    <string name="auto_root_notification_already_attempted">Aucune seconde tentative n’est permise pendant ce démarrage</string>
+    <string name="auto_root_notification_preflight_refused">Arrêt sécurisé avant le lancement de GhostLock</string>
+    <string name="auto_root_notification_failed_disarm_next">Root non validé ; le prochain démarrage désactivera l’automatisation</string>
 </resources>
