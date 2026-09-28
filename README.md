@@ -1,12 +1,12 @@
-# GhostLock for TCL C855
+# GhostLock for TCL T653T01
 
-Experimental temporary-root port for the **TCL C855 / T653T01** running:
+Experimental temporary-root port for the **TCL T653T01** platform running:
 
 - firmware `V8-T653T01-LF1V643`;
 - Android 14;
 - kernel `5.15.180-android14-11`.
 
-Version 1.0 was validated on an owned television with a locked bootloader,
+Version 1.0 was validated on an owned C855 television with a locked bootloader,
 green Verified Boot and SELinux restored to enforcing after setup. It does not
 flash the TV, modify `boot.img` or require OEM unlocking. Root is volatile and
 is removed by a reboot.
@@ -54,7 +54,8 @@ See [docs/ADB_EDITION.md](docs/ADB_EDITION.md) for usage.
 
 ## Scope
 
-- Supported target: TCL C855 / T653T01 V643 only.
+- Supported build: TCL T653T01 V643 only; hardware validation was performed on
+  a C855.
 - No firmware flashing, Fastboot operation or bootloader unlock.
 - No persistent root or boot-time installation.
 - Rebooting ends the root session.

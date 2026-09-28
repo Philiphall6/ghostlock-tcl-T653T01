@@ -19,6 +19,7 @@ The three exact images have:
 - identical compat-select and futex frame sizes;
 - the vulnerable `remove_waiter()` condition still present;
 - 163/163 ReSukiSU imported-symbol CRCs compatible with the existing source.
+- an offline-proven physical kernel `_text` load address of `0x26000000`.
 
 An analysis-only ReSukiSU candidate was also rebuilt with the exact target
 vermagic `5.15.192-android14-11`. Its 163 imported symbol CRCs match all three
@@ -49,12 +50,19 @@ blockers.
 
 ## Remaining blockers
 
-1. Confirm the physical kernel load address after a real V65x boot.
-2. Re-run the exact SLUB/reclaim route in instrumented QEMU.
-3. Obtain or independently validate the still-unpublished exact TCL 5.15.192
+1. Re-run the exact SLUB/reclaim route in instrumented QEMU.
+2. Obtain or independently validate the still-unpublished exact TCL 5.15.192
    vendor source. The current module candidate uses TCL's published 5.15.180
    baseline plus exact target KMI/BTF checks.
-4. Validate network, SELinux restoration and cleanup before any device test.
+3. Validate network, SELinux restoration and cleanup before any device test.
+
+The physical-load item is closed offline. In V655, V665 and V667, all 13
+packaged memory-map overlays set the `MI_KERNEL_POOL1` base to `0x26000000`.
+Each exact `vendor_boot.img` has `kernel_addr=0`, each ARM64 Image has
+`text_offset=0`, and each matching `mboot.img` implements the same
+`MI_KERNEL_POOL1 + vendor_boot.kernel_addr` calculation. The complete evidence
+is recorded in
+`11_KERNEL_ANALYSIS_GENERATED/V655_V665_V667_20260927/T653T01-V65x-physical-text-proof.md`.
 
 `struct page::slab_cache` is no longer a blocker. The 5.15 BTF represents it
 through anonymous nested types: `page+0x08`, then `slab_cache+0x10`, yielding

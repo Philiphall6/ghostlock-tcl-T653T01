@@ -1,11 +1,12 @@
-/* TCL C855 / T653T01 (G08), stock V655, V665 and V667.
+/* TCL T653T01 (G08), stock V655, V665 and V667.
  *
  * The three exact OTA kernels share release 5.15.192-android14-11, identical
  * BTF, identical critical symbol addresses and identical compat-select stack
  * frames.  The vulnerable remove_waiter() condition is still present.
  *
- * This entry is intentionally extraction-only.  Physical load, the live
- * reclaim/SLUB route have not been independently proven for a V65x boot.
+ * This entry is intentionally analysis-only.  The physical load address is
+ * proven offline from every packaged DTBO map, vendor_boot and each matching
+ * mboot implementation.  The live reclaim/SLUB route is not yet proven.
  * GHOST_RECLAIM_TCL_V65X_UNPROVEN is a second safety
  * barrier: even a build with TCL_V643_LAB_ARMING cannot accept this profile.
  */
@@ -13,8 +14,8 @@ OFFSETS_ENTRY("5.15.192-android14-11",
   .analysis_only = 1,
   .stack_overlay_route = GHOST_STACK_OVERLAY_TCL_V65X_NEWSELECT_COMPAT,
   .reclaim_route = GHOST_RECLAIM_TCL_V65X_UNPROVEN,
-  .analysis_blocker = "TCL V65x requires exact physical-load and reclaim validation",
-  .kernel_phys_load = 0,
+  .analysis_blocker = "TCL T653T01 V65x requires exact reclaim and cleanup validation",
+  .kernel_phys_load = 0x26000000ULL,
   .phys_offset = 0x20000000ULL,
   .page_offset = 0xffffff8000000000ULL,
   .direct_map_base = 0xffffff8000000000ULL,

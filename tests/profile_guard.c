@@ -134,8 +134,8 @@ int main(void) {
   failed |= require(v65x->analysis_blocker != NULL &&
                     strstr(v65x->analysis_blocker, "V65x") != NULL,
                     "TCL V65x profile must state its blocker");
-  failed |= require(v65x->kernel_phys_load == 0,
-                    "TCL V65x physical load must remain unresolved");
+  failed |= require(v65x->kernel_phys_load == 0x26000000ULL,
+                    "TCL T653T01 V65x physical load proof changed unexpectedly");
   failed |= require(v65x->struct_slab_cache == 0x18,
                     "TCL V65x nested-BTF slab_cache offset changed unexpectedly");
   failed |= require(v65x->off_slide_loggers_0_1 == 0x026d1900ULL,

@@ -9,6 +9,11 @@ SRCS := \
   src/core/util.c \
   src/core/fops.c
 
+PROFILE_DEPS := \
+  src/devices/offsets.h \
+  src/devices/target.h \
+  $(wildcard src/devices/*/offsets.h)
+
 CFLAGS := -O2 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function \
   -Isrc/core -Isrc/devices -DTARGET_CONFIG_H=\"target.h\" \
   -include stubs/dl_stub.h
@@ -29,14 +34,14 @@ LDFLAGS := -static -pthread
 
 all: ghostlock
 
-ghostlock: $(SRCS)
-	$(NDK_CC) $(CFLAGS) $(LDFLAGS) $^ -o $@
+ghostlock: $(SRCS) $(PROFILE_DEPS)
+	$(NDK_CC) $(CFLAGS) $(LDFLAGS) $(SRCS) -o $@
 
 # Explicitly armed laboratory build.  The ordinary `ghostlock` target keeps
 # the profile's analysis_only stop.  This target exists for the disposable
 # uninstrumented QEMU gate and must not be copied to the TV by automation.
-ghostlock-tcl-v643-lab: $(SRCS)
-	$(NDK_CC) $(CFLAGS) -DTCL_V643_LAB_ARMING=1 $(LDFLAGS) $^ -o $@
+ghostlock-tcl-v643-lab: $(SRCS) $(PROFILE_DEPS)
+	$(NDK_CC) $(CFLAGS) -DTCL_V643_LAB_ARMING=1 $(LDFLAGS) $(SRCS) -o $@
 
 clean:
 	rm -f ghostlock ghostlock-tcl-v643-lab tcl-v643-mcast-helper \
