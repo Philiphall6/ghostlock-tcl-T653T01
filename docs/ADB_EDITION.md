@@ -1,4 +1,4 @@
-# ADB edition — TCL C855 V643
+# ADB edition — TCL T653T01 V643
 
 The ADB edition runs the same hardware-validated direct handoff as the APK,
 from a Linux host already authorized by the TV owner. It is restricted to the
@@ -8,7 +8,7 @@ exact T653T01 V643 Android 14 profile and uses the exact module from
 
 ## Requirements
 
-- TCL C855/T653T01 on `V8-T653T01-LF1V643`;
+- TCL T653T01 device on `V8-T653T01-LF1V643` (hardware validation: C855);
 - kernel `5.15.180-android14-11`;
 - AVB `green`, VBMeta `locked`, SELinux enforcing;
 - a fresh boot, with no KernelSU-family module already loaded;

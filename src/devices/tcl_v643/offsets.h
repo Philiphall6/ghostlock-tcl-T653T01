@@ -1,4 +1,4 @@
-/* TCL C855 / T653T01 (G08), stock V643.
+/* TCL T653T01 (G08), stock V643; hardware validation on C855.
  *
  * Kernel and BTF are from the exact OTA boot image.  This entry deliberately
  * remains analysis-only until the integrated ARM32 _newselect stack-overlay

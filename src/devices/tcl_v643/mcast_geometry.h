@@ -3,7 +3,7 @@
 
 /*
  * Exact host-side geometry for the IPv4 MCAST_BLOCK_SOURCE stack-copy path
- * in the stock TCL C855 V643 kernel (5.15.180-android14-11).
+ * in the stock TCL T653T01 V643 kernel (5.15.180-android14-11).
  *
  * Exact vmlinux-v643.elf disassembly:
  *   __arm64_sys_setsockopt  0x10

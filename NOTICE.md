@@ -1,6 +1,6 @@
 # Notice, sources, and acknowledgements
 
-GhostLock TCL C855 v1.0 is derived from several open security-research
+GhostLock TCL T653T01 v1.0 is derived from several open security-research
 projects. We sincerely thank their authors and maintainers. The links below
 identify sources that were used or consulted during the port. Inclusion does
 not imply that those authors endorse this adaptation.
@@ -34,7 +34,7 @@ not imply that those authors endorse this adaptation.
 - [ReSukiSU/ReSukiSU](https://github.com/ReSukiSU/ReSukiSU)
   — parent KernelSU manager project and userspace foundation.
 - [Philiphall6/ReSukiSU](https://github.com/Philiphall6/ReSukiSU)
-  — required TCL C855 companion fork. The APK edition specifically requires
+  — required TCL T653T01 companion fork. The APK edition specifically requires
   its `tcl-c855-v1.0` release and package `com.philiphall6.resukisu.tcl`.
   Upstream generic modules are not interchangeable with the exact V643 module.
 - [tananaev/adblib](https://github.com/tananaev/adblib)

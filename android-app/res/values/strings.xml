@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">GhostLock TCL C855</string>
-    <string name="app_title">GhostLock TCL C855 — Temporary Root V643</string>
+    <string name="app_name">GhostLock TCL T653T01</string>
+    <string name="app_title">GhostLock TCL T653T01 — Temporary Root V643</string>
     <string name="action_verify">1 — VERIFY</string>
     <string name="action_local_adb">2 — LOCAL ADB — AUTHORIZE / TEST</string>
     <string name="action_root">3 — TCL ROOT + RESUKISU — TEMPORARY</string>

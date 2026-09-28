@@ -2,7 +2,7 @@
 #define TCL_V643_STACK_GEOMETRY_H
 
 /*
- * Exact offline stack geometry for TCL C855 V643, kernel
+ * Exact offline stack geometry for TCL T653T01 V643, kernel
  * 5.15.180-android14-11.  These constants are consumed only by host-side
  * validation tests; they do not select or arm an exploit route.
  *

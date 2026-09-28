@@ -1,6 +1,7 @@
-# GhostLock TCL C855 Android TV app
+# GhostLock TCL T653T01 Android TV app
 
-This directory contains the source for the v1.0 APK edition. The app performs
+This directory contains the source for the v1.0 APK edition for the TCL
+T653T01 platform. The app performs
 the same exact-target checks as the ADB edition, starts GhostLock through an
 owner-authorized local ADB connection, and hands the temporary UID-0 process
 directly to the TCL ReSukiSU loader. Root is volatile and disappears after a
@@ -37,7 +38,7 @@ Place the repositories next to each other:
 
 ```text
 workspace/
-├── ghostlock-tcl-c855/
+├── ghostlock-tcl-c855/    # historical repository slug
 ├── ReSukiSU/             # Philiphall6 fork at the pinned commit
 └── adblib/
 ```
