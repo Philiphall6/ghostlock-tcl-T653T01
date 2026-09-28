@@ -135,6 +135,12 @@ static int print_profile_info(const char *release_override) {
   printf("runtime_ack=TCL_V65X_UNTESTED_ACK="
          "I_ACCEPT_V65X_KERNEL_PANIC_RISK\n");
 #endif
+#if defined(TCL_V637_EXPERIMENTAL_ARMING) && TCL_V637_EXPERIMENTAL_ARMING
+  printf("experimental_v637_build=yes\n");
+  printf("experimental_hardware_validation=no\n");
+  printf("runtime_ack=TCL_V637_UNTESTED_ACK="
+         "I_ACCEPT_V637_KERNEL_PANIC_RISK\n");
+#endif
   return 0;
 }
 
@@ -230,6 +236,42 @@ static int select_offsets(void) {
           pr_warning("V65X EXPERIMENTAL ARMING: V655/V665/V667 have not "
                      "been tested on hardware; kernel panic or forced "
                      "reboot is possible\n");
+        }
+#endif
+#if defined(TCL_V637_EXPERIMENTAL_ARMING) && TCL_V637_EXPERIMENTAL_ARMING
+        static struct kernel_offsets v637_experimental;
+        if (candidate->stack_overlay_route ==
+                GHOST_STACK_OVERLAY_TCL_V643_NEWSELECT_COMPAT &&
+            candidate->reclaim_route == GHOST_RECLAIM_TCL_V643_EXACT) {
+          char firmware[PROP_VALUE_MAX] = {0};
+          const char *ack = getenv("TCL_V637_UNTESTED_ACK");
+          if (strcmp(uts.release, "5.15.180-android14-11") != 0 ||
+              strcmp(profile_release, uts.release) != 0) {
+            pr_error("V637 experimental build requires the exact live "
+                     "5.15.180-android14-11 release\n");
+            return -1;
+          }
+          if (__system_property_get("ro.software.version_id", firmware) <= 0 ||
+              strcmp(firmware, "V8-T653T01-LF1V637") != 0) {
+            pr_error("V637 experimental build refuses firmware '%s'; "
+                     "only exact T653T01 V637 is accepted\n",
+                     firmware[0] ? firmware : "unavailable");
+            return -1;
+          }
+          if (!ack || strcmp(ack, "I_ACCEPT_V637_KERNEL_PANIC_RISK") != 0) {
+            pr_error("V637 experimental arming requires the explicit "
+                     "TCL_V637_UNTESTED_ACK acknowledgement\n");
+            return -1;
+          }
+          v637_experimental = *candidate;
+          v637_experimental.analysis_only = 0;
+          v637_experimental.analysis_blocker =
+              "EXPERIMENTAL: stock V637 hardware path is untested";
+          candidate = &v637_experimental;
+          lab_accepted = 1;
+          pr_warning("V637 EXPERIMENTAL ARMING: offline compatibility is "
+                     "high but V637 has not been tested on hardware; kernel "
+                     "panic or forced reboot is possible\n");
         }
 #endif
         if (!lab_accepted) {

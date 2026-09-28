@@ -19,7 +19,7 @@ CFLAGS := -O2 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function
   -include stubs/dl_stub.h
 LDFLAGS := -static -pthread
 
-.PHONY: all clean ghostlock-tcl-v643-lab ghostlock-tcl-v65x-experimental profile-guard-test profile-manifest-test tcl-v643-stack-geometry-test \
+.PHONY: all clean ghostlock-tcl-v643-lab ghostlock-tcl-v637-experimental ghostlock-tcl-v65x-experimental profile-guard-test profile-manifest-test tcl-v643-stack-geometry-test \
 	tcl-v643-syscall-stack-model-test \
 	tcl-v643-pi-blocked-on-model-test \
 	tcl-v643-pselect-rounds-model-test \
@@ -44,6 +44,13 @@ ghostlock: $(SRCS) $(PROFILE_DEPS)
 ghostlock-tcl-v643-lab: $(SRCS) $(PROFILE_DEPS)
 	$(NDK_CC) $(CFLAGS) -DTCL_V643_LAB_ARMING=1 $(LDFLAGS) $(SRCS) -o $@
 
+# Explicitly dangerous V637 pre-release build. V637 shares the exact V643
+# BTF/offset family, but has not been exercised on real V637 hardware. The
+# binary has independent firmware and acknowledgement gates.
+ghostlock-tcl-v637-experimental: $(SRCS) $(PROFILE_DEPS)
+	$(NDK_CC) $(CFLAGS) -DTCL_V637_EXPERIMENTAL_ARMING=1 \
+		$(LDFLAGS) $(SRCS) -o $@
+
 # Explicitly dangerous V655/V665/V667 pre-release build.  The ordinary
 # target remains fail-closed.  This binary accepts only the exact
 # 5.15.192-android14-11 profile and still requires a runtime acknowledgement.
@@ -52,7 +59,8 @@ ghostlock-tcl-v65x-experimental: $(SRCS) $(PROFILE_DEPS)
 		$(LDFLAGS) $(SRCS) -o $@
 
 clean:
-	rm -f ghostlock ghostlock-tcl-v643-lab ghostlock-tcl-v65x-experimental \
+	rm -f ghostlock ghostlock-tcl-v643-lab ghostlock-tcl-v637-experimental \
+		ghostlock-tcl-v65x-experimental \
 		tcl-v643-mcast-helper \
 		tcl-v643-uring-perf-probe
 
@@ -73,8 +81,10 @@ profile-guard-test:
 	$(CC) -O2 -Wall -Isrc/devices tests/profile_guard.c -o /tmp/ghostlock-profile-guard
 	/tmp/ghostlock-profile-guard
 
-# Host-only fail-closed validation of the portable V65x profile manifest.
+# Host-only fail-closed validation of the experimental firmware manifests.
 profile-manifest-test:
+	python3 tools/validate-profile-manifest.py \
+		profiles/tcl/t653t01/5.15.180-android14-11/profile-v637.json
 	python3 tools/validate-profile-manifest.py \
 		profiles/tcl/t653t01/5.15.192-android14-11/profile.json
 

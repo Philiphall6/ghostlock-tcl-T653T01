@@ -1,0 +1,91 @@
+{
+  "$schema": "../../../schema/profile-v1.schema.json",
+  "schema_version": 1,
+  "id": "tcl-t653t01-g08-5.15.180-android14-11-v637",
+  "status": "analysis_only",
+  "device": {
+    "manufacturer": "TCL",
+    "platform": ["T653T01", "0012T01"],
+    "product": ["G08", "G08_4K_US"],
+    "scope_note": "Platform profile for the exact V637 OTA. Commercial model compatibility still depends on TCL's firmware allowlist."
+  },
+  "kernel": {
+    "release": "5.15.180-android14-11",
+    "android": 14,
+    "sdk": 34,
+    "page_size": 4096,
+    "va_bits": 39,
+    "kimage_text_base": "0xffffffc008000000",
+    "btf_sha256": "2a49bbdcf171a293d6d311d3009ad5725c62a42e121b22920756c44abf224f0a",
+    "embedded_config_sha256": "407e1b24ed45ba5054ceb0c9865fbbd0c5c6e5835844ead92a36cf25de8240de",
+    "accepted_image_sha256": [
+      "656873a169372cafa170867519198b9649ac408badc3bdd640b82e6f4ee80548"
+    ]
+  },
+  "firmwares": [
+    {
+      "version": "V8-T653T01-LF1V637",
+      "package_type": "signed Android BLOCK OTA (not a full USB IMG/PKG)",
+      "ota_sha256": "38ea4a9f8df49afed7ee6f64a69f86d8e7118e484d19aba2fa90dbf730180c1e",
+      "boot_sha256": "62f9fd10f20d7b7f81f7066918e5381aacd9fda90b54f81f411df781e8f8e85f",
+      "kernel_sha256": "656873a169372cafa170867519198b9649ac408badc3bdd640b82e6f4ee80548",
+      "vendor_boot_sha256": "651944700fe40d550279fce4242985d115ff45aadca55e6d2756af636e945d32",
+      "dtbo_sha256": "5fb46e22a6f86d6c80ef4be923d9cac907c3d2ccdfabc3d440610915cf4e1d70"
+    }
+  ],
+  "avb": {
+    "boot_algorithm": "SHA256_RSA4096",
+    "boot_key_sha1": "6b83a4063c9de3cd7218e8ad199697ca3f2c00f4",
+    "vbmeta_algorithm": "SHA256_RSA4096",
+    "vbmeta_key_sha1": "6646bb2b96ab06c3314611ea6f6f493aca54bd34",
+    "flags": 0,
+    "rollback_index": 0,
+    "ota_certificate_sha256": "494b917c1f36f2205c76131a310a44e875b498ab70dfe903a42d23b4829cf444"
+  },
+  "validation": {
+    "compared_against": "V8-T653T01-LF1V643",
+    "cve_2026_43499_primitive_present": true,
+    "remove_waiter_offset": "0x01470cbc",
+    "system_map_symbols": 166352,
+    "critical_symbol_addresses_match_v643": "28/28",
+    "btf_identical_to_v643": true,
+    "embedded_config_identical_to_v643": true,
+    "compat_select_functions_identical_to_v643": true,
+    "free_unref_page_identical_to_v643": true,
+    "remove_waiter_control_flow_matches_v643": true,
+    "remove_waiter_difference": "two diagnostic string-address immediates only",
+    "kernel_phys_load": "0x26000000",
+    "kernel_phys_load_evidence": "12/12 packaged DTBO memory maps use MI_KERNEL_POOL1 base 0x26000000; vendor_boot kernel_addr and ARM64 Image text_offset are zero; exact V637 mboot implements the same pool-base-plus-header-offset calculation",
+    "resukisu_imported_symbol_crcs": "163/163",
+    "resukisu_target_vermagic_exact": true,
+    "resukisu_module_candidate_sha256": "b6aeb907bd468852a11d7a90d121df87e1716f3b9549c69ee0190607e0d5f50c",
+    "selinux_precompiled_policy": {
+      "size": 1030054,
+      "sha256": "1930f6750090c816a3ea8cc32f752e2eec9b9e6d10d2851fe001fd690b069819",
+      "identical_to_v643": true
+    },
+    "vendor_boot_dtb_identical_to_v643": true,
+    "vendor_boot_bootconfig_identical_to_v643": true,
+    "qemu": false,
+    "hardware": false
+  },
+  "safety": {
+    "execution_allowed": false,
+    "blockers": [
+      "no root attempt has been performed on hardware actually running V637",
+      "live PCP/reclaim stability, module late-load and post-handoff network restoration have not been observed on V637",
+      "the exact V637 kernel image is not byte-identical to V643 despite matching critical offsets, BTF and control flow"
+    ]
+  },
+  "experimental_prerelease": {
+    "tag": "v1.1.0-pre2",
+    "hardware_validated": false,
+    "manual_adb_only": true,
+    "auto_root": false,
+    "one_attempt_per_boot": true,
+    "kernel_panic_risk": true,
+    "requires_runtime_ack": "I_ACCEPT_V637_KERNEL_PANIC_RISK",
+    "does_not_change_profile_status": true
+  },
+  "source": "https://disk.yandex.ru/d/SE7SY4RPhqD7YA"
+}

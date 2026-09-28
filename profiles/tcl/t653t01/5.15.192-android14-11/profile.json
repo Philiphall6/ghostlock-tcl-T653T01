@@ -120,7 +120,7 @@
     ]
   },
   "experimental_prerelease": {
-    "tag": "v1.1.0-pre1",
+    "tag": "v1.1.0-pre2",
     "hardware_validated": false,
     "manual_adb_only": true,
     "auto_root": false,

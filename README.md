@@ -61,20 +61,22 @@ See [docs/ADB_EDITION.md](docs/ADB_EDITION.md) for usage.
 - Rebooting ends the root session.
 - Other firmware versions require separate validation.
 
-## V655 / V665 / V667 experimental pre-release
+## V637 / V655 / V665 / V667 experimental pre-release
 
-An extraction-only profile for the common `5.15.192-android14-11` kernel is
-tracked in
-[`profiles/tcl/t653t01/5.15.192-android14-11/profile.json`](profiles/tcl/t653t01/5.15.192-android14-11/profile.json).
-The ordinary build still refuses primitive arming. A separate
-[v1.1.0-pre1](https://github.com/Philiphall6/ghostlock-tcl-T653T01/releases/tag/v1.1.0-pre1)
-ADB-only pre-release permits one explicitly acknowledged experimental attempt
-on exact V655/V665/V667 builds. It has **not** been tested on real V65x
-hardware and may cause a kernel panic, reboot, network/ADB loss or require a
-power cycle. It is manual-only, contains no V65x APK or boot auto-root, and
-does not change the profile's `analysis_only` status. See
-[`docs/RELEASE_V65X_PRE1.md`](docs/RELEASE_V65X_PRE1.md) and
-[`docs/TCL_V65X_PROFILE_STATUS_20260928.md`](docs/TCL_V65X_PROFILE_STATUS_20260928.md).
+The [v1.1.0-pre2](https://github.com/Philiphall6/ghostlock-tcl-T653T01/releases/tag/v1.1.0-pre2)
+ADB-only pre-release provides separate guarded bundles for exact V637 and
+V655/V665/V667 builds. None of those matching firmware versions has been
+tested on real hardware. They may cause a kernel panic, reboot, network/ADB
+loss or require a power cycle. The ordinary build remains fail-closed, both
+profiles remain `analysis_only`, and there is no APK or boot auto-root for
+these experimental builds.
+
+V637 has high offline compatibility with V643: identical BTF/configuration,
+28/28 matching critical offsets, 163/163 ReSukiSU CRCs and an identical
+SELinux policy. V65x uses a different `5.15.192` kernel and remains the less
+certain profile. See [`docs/RELEASE_PRE2.md`](docs/RELEASE_PRE2.md),
+[`docs/TCL_V637_PROFILE_STATUS_20260928.md`](docs/TCL_V637_PROFILE_STATUS_20260928.md)
+and [`docs/TCL_V65X_PROFILE_STATUS_20260928.md`](docs/TCL_V65X_PROFILE_STATUS_20260928.md).
 
 ## Credits
 
