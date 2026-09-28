@@ -13,6 +13,9 @@ enum ghost_stack_overlay_route {
   /* Persistent AArch32 _newselect carrier.  Unlike the MCAST copy, the
    * controlled fd bitmaps remain on the kernel stack while select blocks. */
   GHOST_STACK_OVERLAY_TCL_V643_NEWSELECT_COMPAT = 3,
+  /* V655/V665/V667 share the V643 frame geometry, but this distinct value
+   * keeps the unvalidated V65x route impossible to arm by a V643 lab build. */
+  GHOST_STACK_OVERLAY_TCL_V65X_NEWSELECT_COMPAT = 4,
 };
 
 enum ghost_reclaim_route {
@@ -25,6 +28,8 @@ enum ghost_reclaim_route {
    * partial ballast slabs, one fully controlled target slab, then eight
    * one-object drain slabs interleaved with order-2 io_uring allocations. */
   GHOST_RECLAIM_TCL_V643_EXACT = 2,
+  /* Separate fail-closed state for the 5.15.192 V65x family. */
+  GHOST_RECLAIM_TCL_V65X_UNPROVEN = 3,
 };
 
 struct kernel_offsets {
@@ -197,6 +202,7 @@ struct kernel_offsets {
 static const struct kernel_offsets known_offsets[] = {
 #include "sabrina/offsets.h"
 #include "tcl_v643/offsets.h"
+#include "tcl_v65x/offsets.h"
   { .uname_r = NULL }
 };
 

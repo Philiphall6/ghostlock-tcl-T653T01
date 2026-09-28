@@ -12,19 +12,28 @@ static int require(int condition, const char *message) {
 
 int main(void) {
   const struct kernel_offsets *tcl = NULL;
+  const struct kernel_offsets *v65x = NULL;
   int matches = 0;
+  int v65x_matches = 0;
 
   for (int i = 0; known_offsets[i].uname_r; i++) {
     if (strcmp(known_offsets[i].uname_r, "5.15.180-android14-11") == 0) {
       tcl = &known_offsets[i];
       matches++;
     }
+    if (strcmp(known_offsets[i].uname_r, "5.15.192-android14-11") == 0) {
+      v65x = &known_offsets[i];
+      v65x_matches++;
+    }
   }
 
   int failed = 0;
   failed |= require(matches == 1, "TCL V643 profile must occur exactly once");
   failed |= require(tcl != NULL, "TCL V643 profile is missing");
-  if (!tcl) return 1;
+  failed |= require(v65x_matches == 1,
+                    "TCL V65x profile must occur exactly once");
+  failed |= require(v65x != NULL, "TCL V65x profile is missing");
+  if (!tcl || !v65x) return 1;
 
   failed |= require(tcl->analysis_only == 1,
                     "TCL V643 profile must remain analysis-only");
@@ -114,7 +123,36 @@ int main(void) {
                         (4096U << tcl->mm_slab_order),
                     "TCL fake user_namespace exceeds the order-2 slab");
 
+  failed |= require(v65x->analysis_only == 1,
+                    "TCL V65x profile must remain analysis-only");
+  failed |= require(v65x->stack_overlay_route ==
+                        GHOST_STACK_OVERLAY_TCL_V65X_NEWSELECT_COMPAT,
+                    "TCL V65x must retain its distinct non-runnable stack route");
+  failed |= require(v65x->reclaim_route ==
+                        GHOST_RECLAIM_TCL_V65X_UNPROVEN,
+                    "TCL V65x reclaim must remain unproven");
+  failed |= require(v65x->analysis_blocker != NULL &&
+                    strstr(v65x->analysis_blocker, "V65x") != NULL,
+                    "TCL V65x profile must state its blocker");
+  failed |= require(v65x->kernel_phys_load == 0,
+                    "TCL V65x physical load must remain unresolved");
+  failed |= require(v65x->struct_slab_cache == 0x18,
+                    "TCL V65x nested-BTF slab_cache offset changed unexpectedly");
+  failed |= require(v65x->off_slide_loggers_0_1 == 0x026d1900ULL,
+                    "TCL V65x logger-pair disassembly offset changed unexpectedly");
+  failed |= require(v65x->kimage_text_base == 0xffffffc008000000ULL &&
+                    v65x->off_init_cred == 0x027c4978ULL &&
+                    v65x->off_init_task == 0x028026c0ULL &&
+                    v65x->off_selinux_enforcing == 0x029404b0ULL,
+                    "TCL V65x exact symbol offsets changed unexpectedly");
+  failed |= require(v65x->task_pi_blocked_on == tcl->task_pi_blocked_on &&
+                    v65x->waiter_task == tcl->waiter_task &&
+                    v65x->waiter_lock == tcl->waiter_lock &&
+                    v65x->cred_size == tcl->cred_size &&
+                    v65x->fops_ioctl == tcl->fops_ioctl,
+                    "TCL V65x BTF layout no longer matches V643");
+
   if (failed) return 1;
-  puts("PASS: TCL V643 profile is present and safely analysis-only");
+  puts("PASS: TCL V643 and V65x profiles are present and safely gated");
   return 0;
 }

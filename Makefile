@@ -14,7 +14,7 @@ CFLAGS := -O2 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function
   -include stubs/dl_stub.h
 LDFLAGS := -static -pthread
 
-.PHONY: all clean ghostlock-tcl-v643-lab profile-guard-test tcl-v643-stack-geometry-test \
+.PHONY: all clean ghostlock-tcl-v643-lab profile-guard-test profile-manifest-test tcl-v643-stack-geometry-test \
 	tcl-v643-syscall-stack-model-test \
 	tcl-v643-pi-blocked-on-model-test \
 	tcl-v643-pselect-rounds-model-test \
@@ -58,6 +58,11 @@ tcl-v643-mcast-helper: src/helpers/tcl_v643_mcast_helper.c
 profile-guard-test:
 	$(CC) -O2 -Wall -Isrc/devices tests/profile_guard.c -o /tmp/ghostlock-profile-guard
 	/tmp/ghostlock-profile-guard
+
+# Host-only fail-closed validation of the portable V65x profile manifest.
+profile-manifest-test:
+	python3 tools/validate-profile-manifest.py \
+		profiles/tcl/t653t01/5.15.192-android14-11/profile.json
 
 # Host-only static model of offsets recovered from the exact TCL V643 binary.
 # It neither builds nor runs the exploit implementation.

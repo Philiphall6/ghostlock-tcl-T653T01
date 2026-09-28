@@ -93,6 +93,9 @@ static int print_profile_info(const char *release_override) {
     case GHOST_STACK_OVERLAY_TCL_V643_NEWSELECT_COMPAT:
       stack_route = "tcl-v643-newselect-arm32-compat";
       break;
+    case GHOST_STACK_OVERLAY_TCL_V65X_NEWSELECT_COMPAT:
+      stack_route = "tcl-v65x-newselect-arm32-compat-analysis";
+      break;
   }
   printf("stack_overlay_route=%s\n", stack_route);
   const char *reclaim_route = "reference-sabrina";
@@ -100,6 +103,8 @@ static int print_profile_info(const char *release_override) {
     reclaim_route = "tcl-v643-unproven";
   else if (profile->reclaim_route == GHOST_RECLAIM_TCL_V643_EXACT)
     reclaim_route = "tcl-v643-exact";
+  else if (profile->reclaim_route == GHOST_RECLAIM_TCL_V65X_UNPROVEN)
+    reclaim_route = "tcl-v65x-unproven";
   printf("reclaim_route=%s\n", reclaim_route);
   printf("analysis_blocker=%s\n",
          profile->analysis_blocker ? profile->analysis_blocker : "");

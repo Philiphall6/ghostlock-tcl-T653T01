@@ -1842,6 +1842,12 @@ uintptr_t prepare_kernel_page(int payload_mode) {
     pr_error("TCL V643 reclaim route is not dynamically proven; refusing page preparation\n");
     return 0;
   }
+  if (active_offsets &&
+      active_offsets->reclaim_route == GHOST_RECLAIM_TCL_V65X_UNPROVEN) {
+    errno = ENOTSUP;
+    pr_error("TCL V65x reclaim route is not validated; refusing page preparation\n");
+    return 0;
+  }
   close_reclaim_sockets();
   /* Reference/Sabrina route only. Free the previous attempt's MOVABLE-storm
    * region so another large allocation is not stacked on top of it. */

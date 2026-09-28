@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Philiphall6/ghostlock-tcl-c855/profiles/schema/profile-v1.schema.json",
+  "title": "Android TV kernel profile manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "id",
+    "status",
+    "device",
+    "kernel",
+    "firmwares",
+    "validation",
+    "safety"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "id": { "type": "string", "minLength": 1 },
+    "status": {
+      "enum": ["draft", "analysis_only", "qemu_validated", "hardware_validated"]
+    },
+    "device": {
+      "type": "object",
+      "required": ["manufacturer", "platform", "product"],
+      "properties": {
+        "manufacturer": { "type": "string" },
+        "platform": { "type": "array", "items": { "type": "string" } },
+        "product": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "kernel": {
+      "type": "object",
+      "required": ["release", "btf_sha256", "accepted_image_sha256"],
+      "properties": {
+        "release": { "type": "string" },
+        "btf_sha256": { "$ref": "#/$defs/sha256" },
+        "accepted_image_sha256": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/sha256" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "firmwares": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["version", "ota_sha256", "boot_sha256", "kernel_sha256"],
+        "properties": {
+          "version": { "type": "string" },
+          "ota_sha256": { "$ref": "#/$defs/sha256" },
+          "boot_sha256": { "$ref": "#/$defs/sha256" },
+          "kernel_sha256": { "$ref": "#/$defs/sha256" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "validation": { "type": "object" },
+    "safety": {
+      "type": "object",
+      "required": ["execution_allowed", "blockers"],
+      "properties": {
+        "execution_allowed": { "type": "boolean" },
+        "blockers": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "additionalProperties": true
+}

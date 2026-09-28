@@ -60,6 +60,16 @@ See [docs/ADB_EDITION.md](docs/ADB_EDITION.md) for usage.
 - Rebooting ends the root session.
 - Other firmware versions require separate validation.
 
+## V655 / V665 / V667 development status
+
+An extraction-only profile for the common `5.15.192-android14-11` kernel is
+tracked in
+[`profiles/tcl/t653t01/5.15.192-android14-11/profile.json`](profiles/tcl/t653t01/5.15.192-android14-11/profile.json).
+It recognizes the exact V655, V665 and V667 kernel hashes but deliberately
+refuses primitive arming. These versions are **not supported by the v1.0
+release**. See
+[`docs/TCL_V65X_PROFILE_STATUS_20260928.md`](docs/TCL_V65X_PROFILE_STATUS_20260928.md).
+
 ## Credits
 
 This port builds on work from

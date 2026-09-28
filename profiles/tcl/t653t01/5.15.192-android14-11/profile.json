@@ -1,0 +1,82 @@
+{
+  "$schema": "../../../schema/profile-v1.schema.json",
+  "schema_version": 1,
+  "id": "tcl-t653t01-g08-5.15.192-android14-11-v65x",
+  "status": "analysis_only",
+  "device": {
+    "manufacturer": "TCL",
+    "platform": ["T653T01", "0012T01"],
+    "product": ["G08", "G08_4K_US"],
+    "models_confirmed_by_package": ["C855"]
+  },
+  "kernel": {
+    "release": "5.15.192-android14-11",
+    "android": 14,
+    "sdk": 34,
+    "page_size": 4096,
+    "va_bits": 39,
+    "kimage_text_base": "0xffffffc008000000",
+    "btf_sha256": "592fc45473082728931c2af81ae097904e89425fda17dab791d12118f34fcc40",
+    "accepted_image_sha256": [
+      "f1baf5c2a2610f8d98b625c6193c67a55c42f5def325485f6eb7d4bc5f5749e6",
+      "2fd6f450dc2720c72827aa05887e43c7832fd495bf740324f3598758d404d05a",
+      "8f0bc6fa83334c875f986d161f97c684d65f087091335d2a4df4af7b3bb38b5b"
+    ]
+  },
+  "firmwares": [
+    {
+      "version": "V8-T653T01-LF1V655",
+      "ota_sha256": "cbda5e03f5810d4970df5322b4359c98fe432a50c58df7927e5cce408287987c",
+      "boot_sha256": "8c93a07410c1023de5f84611bdc671470e7e0a827b74e70840ae10a203c0e746",
+      "kernel_sha256": "f1baf5c2a2610f8d98b625c6193c67a55c42f5def325485f6eb7d4bc5f5749e6"
+    },
+    {
+      "version": "V8-T653T01-LF1V665",
+      "ota_sha256": "7a3dfc60a115966e4b27efc746983d95a6b4ad85b729c67fe4bb4ca2aada7fb8",
+      "boot_sha256": "93ed85c24635676b31c74ca378ae7db281ca43b35000a0145fa60ba4d1c5cd7c",
+      "kernel_sha256": "2fd6f450dc2720c72827aa05887e43c7832fd495bf740324f3598758d404d05a"
+    },
+    {
+      "version": "V8-T653T01-LF1V667",
+      "ota_sha256": "2d33cbd84f8ba0c6bc4a378c7129350ef948c6cb9fe8888c199ebc09f6130879",
+      "boot_sha256": "fc102d80c46f8f0cf7ec3b5a23abe01a4e58e6dec7e2b493184b43f6bd8b2887",
+      "kernel_sha256": "8f0bc6fa83334c875f986d161f97c684d65f087091335d2a4df4af7b3bb38b5b"
+    }
+  ],
+  "avb": {
+    "boot_algorithm": "SHA256_RSA4096",
+    "boot_key_sha1": "6b83a4063c9de3cd7218e8ad199697ca3f2c00f4",
+    "vbmeta_algorithm": "SHA256_RSA4096",
+    "vbmeta_key_sha1": "6646bb2b96ab06c3314611ea6f6f493aca54bd34",
+    "flags": 0,
+    "rollback_index": 0
+  },
+  "validation": {
+    "cve_2026_43499_primitive_present": true,
+    "remove_waiter_offset": "0x01475368",
+    "kallsyms_symbols": 166475,
+    "btf_root_layouts_match_v643": "16/16",
+    "struct_page_slab_cache_offset": "0x18 (embedded BTF anonymous-union path)",
+    "nf_log_logger_pair_offset": "0x026d1900 (exact disassembly)",
+    "resukisu_imported_symbol_crcs": "163/163",
+    "resukisu_target_vermagic_exact": true,
+    "resukisu_btf_layouts_match_target": "20/20",
+    "resukisu_elf_symbols_unique_in_each_system_map": "214/214",
+    "resukisu_private_symbols_requiring_relocation": 52,
+    "resukisu_analysis_candidate_sha256": "48c64c0d8b85e62dd5db1125b32ea12cff91590d58138ad4a742ae19583b5db9",
+    "resukisu_candidate_load_authorized": false,
+    "compat_select_stack_frames_match_v643": true,
+    "qemu": false,
+    "hardware": false
+  },
+  "safety": {
+    "execution_allowed": false,
+    "blockers": [
+      "kernel physical load address not confirmed on a V65x boot",
+      "SLUB/reclaim choreography not validated in instrumented QEMU",
+      "exact TCL 5.15.192 vendor source not published; ReSukiSU candidate uses the published 5.15.180 baseline plus exact target KMI/BTF validation",
+      "network, SELinux restoration and cleanup not validated for V65x"
+    ]
+  },
+  "source": "https://disk.yandex.ru/d/SE7SY4RPhqD7YA"
+}
