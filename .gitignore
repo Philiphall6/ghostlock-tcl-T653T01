@@ -1,6 +1,7 @@
 # Build artifacts
 ghostlock
 ghostlock-tcl-v643-lab
+ghostlock-tcl-v65x-experimental
 tcl-v643-mcast-helper
 tcl-v643-uring-perf-probe
 *.o

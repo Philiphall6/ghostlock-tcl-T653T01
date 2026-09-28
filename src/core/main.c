@@ -129,6 +129,12 @@ static int print_profile_info(const char *release_override) {
          (unsigned long long)profile->kernel_phys_load);
   printf("primitive_arming=%s\n",
          profile->analysis_only ? "REFUSED" : "profile-eligible");
+#if defined(TCL_V65X_EXPERIMENTAL_ARMING) && TCL_V65X_EXPERIMENTAL_ARMING
+  printf("experimental_v65x_build=yes\n");
+  printf("experimental_hardware_validation=no\n");
+  printf("runtime_ack=TCL_V65X_UNTESTED_ACK="
+         "I_ACCEPT_V65X_KERNEL_PANIC_RISK\n");
+#endif
   return 0;
 }
 
@@ -185,6 +191,45 @@ static int select_offsets(void) {
           lab_accepted = 1;
           pr_warning("QEMU V65X MODEL ARMING: shared T653T01 chain only; "
                      "this is not proof for a stock V65x kernel\n");
+        }
+#endif
+#if defined(TCL_V65X_EXPERIMENTAL_ARMING) && TCL_V65X_EXPERIMENTAL_ARMING
+        static struct kernel_offsets v65x_experimental;
+        if (candidate->stack_overlay_route ==
+                GHOST_STACK_OVERLAY_TCL_V65X_NEWSELECT_COMPAT &&
+            candidate->reclaim_route == GHOST_RECLAIM_TCL_V65X_UNPROVEN) {
+          char firmware[PROP_VALUE_MAX] = {0};
+          const char *ack = getenv("TCL_V65X_UNTESTED_ACK");
+          if (strcmp(uts.release, "5.15.192-android14-11") != 0 ||
+              strcmp(profile_release, uts.release) != 0) {
+            pr_error("V65x experimental build requires the exact live "
+                     "5.15.192-android14-11 release\n");
+            return -1;
+          }
+          if (__system_property_get("ro.software.version_id", firmware) <= 0 ||
+              (strcmp(firmware, "V8-T653T01-LF1V655") != 0 &&
+               strcmp(firmware, "V8-T653T01-LF1V665") != 0 &&
+               strcmp(firmware, "V8-T653T01-LF1V667") != 0)) {
+            pr_error("V65x experimental build refuses firmware '%s'; "
+                     "only exact T653T01 V655/V665/V667 builds are accepted\n",
+                     firmware[0] ? firmware : "unavailable");
+            return -1;
+          }
+          if (!ack || strcmp(ack, "I_ACCEPT_V65X_KERNEL_PANIC_RISK") != 0) {
+            pr_error("V65x experimental arming requires the explicit "
+                     "TCL_V65X_UNTESTED_ACK acknowledgement\n");
+            return -1;
+          }
+          v65x_experimental = *candidate;
+          v65x_experimental.analysis_only = 0;
+          v65x_experimental.reclaim_route = GHOST_RECLAIM_TCL_V65X_EXACT;
+          v65x_experimental.analysis_blocker =
+              "EXPERIMENTAL: stock V65x hardware path is untested";
+          candidate = &v65x_experimental;
+          lab_accepted = 1;
+          pr_warning("V65X EXPERIMENTAL ARMING: V655/V665/V667 have not "
+                     "been tested on hardware; kernel panic or forced "
+                     "reboot is possible\n");
         }
 #endif
         if (!lab_accepted) {

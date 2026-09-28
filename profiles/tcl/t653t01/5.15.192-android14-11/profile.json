@@ -119,5 +119,15 @@
       "network, SELinux restoration and cleanup not validated for V65x"
     ]
   },
+  "experimental_prerelease": {
+    "tag": "v1.1.0-pre1",
+    "hardware_validated": false,
+    "manual_adb_only": true,
+    "auto_root": false,
+    "one_attempt_per_boot": true,
+    "kernel_panic_risk": true,
+    "requires_runtime_ack": "I_ACCEPT_V65X_KERNEL_PANIC_RISK",
+    "does_not_change_profile_status": true
+  },
   "source": "https://disk.yandex.ru/d/SE7SY4RPhqD7YA"
 }

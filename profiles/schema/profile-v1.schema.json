@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Philiphall6/ghostlock-tcl-c855/profiles/schema/profile-v1.schema.json",
+  "$id": "https://github.com/Philiphall6/ghostlock-tcl-T653T01/profiles/schema/profile-v1.schema.json",
   "title": "Android TV kernel profile manifest",
   "type": "object",
   "required": [

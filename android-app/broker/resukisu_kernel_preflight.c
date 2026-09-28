@@ -10,7 +10,9 @@
 
 #include "resukisu_required_symbols.h"
 
+#ifndef EXPECTED_RELEASE
 #define EXPECTED_RELEASE "5.15.180-android14-11"
+#endif
 
 static int read_small(const char *path, char *buffer, size_t capacity) {
   int fd = open(path, O_RDONLY | O_CLOEXEC);

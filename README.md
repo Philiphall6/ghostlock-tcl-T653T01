@@ -18,7 +18,7 @@ is removed by a reboot.
 
 ## Download
 
-The [v1.0 release](https://github.com/Philiphall6/ghostlock-tcl-c855/releases/tag/v1.0)
+The [v1.0 release](https://github.com/Philiphall6/ghostlock-tcl-T653T01/releases/tag/v1.0)
 contains:
 
 - `GhostLock-TCL-C855-v1.0.apk` — Android TV interface;
@@ -61,15 +61,19 @@ See [docs/ADB_EDITION.md](docs/ADB_EDITION.md) for usage.
 - Rebooting ends the root session.
 - Other firmware versions require separate validation.
 
-## V655 / V665 / V667 development status
+## V655 / V665 / V667 experimental pre-release
 
 An extraction-only profile for the common `5.15.192-android14-11` kernel is
 tracked in
 [`profiles/tcl/t653t01/5.15.192-android14-11/profile.json`](profiles/tcl/t653t01/5.15.192-android14-11/profile.json).
-It recognizes the exact V655, V665 and V667 kernel hashes but deliberately
-refuses primitive arming. The shared V643/V65x chain has passed a
-source-built QEMU surrogate gate, but not the exact stock V65x runtime. These
-versions are **not supported by the v1.0 release**. See
+The ordinary build still refuses primitive arming. A separate
+[v1.1.0-pre1](https://github.com/Philiphall6/ghostlock-tcl-T653T01/releases/tag/v1.1.0-pre1)
+ADB-only pre-release permits one explicitly acknowledged experimental attempt
+on exact V655/V665/V667 builds. It has **not** been tested on real V65x
+hardware and may cause a kernel panic, reboot, network/ADB loss or require a
+power cycle. It is manual-only, contains no V65x APK or boot auto-root, and
+does not change the profile's `analysis_only` status. See
+[`docs/RELEASE_V65X_PRE1.md`](docs/RELEASE_V65X_PRE1.md) and
 [`docs/TCL_V65X_PROFILE_STATUS_20260928.md`](docs/TCL_V65X_PROFILE_STATUS_20260928.md).
 
 ## Credits

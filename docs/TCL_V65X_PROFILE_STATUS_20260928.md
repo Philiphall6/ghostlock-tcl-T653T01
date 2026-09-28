@@ -61,6 +61,13 @@ The manifest validator enforces that a profile cannot set
 `execution_allowed=true` unless it is `hardware_validated` and has no remaining
 blockers.
 
+An explicitly named `ghostlock-tcl-v65x-experimental` build is distributed in
+the `v1.1.0-pre1` ADB-only pre-release. It does not promote the portable
+manifest or the ordinary build. It accepts only the exact live
+`5.15.192-android14-11` kernel and V655/V665/V667 firmware identifiers, and
+requires a typed kernel-panic acknowledgement. This is a voluntary hardware
+validation path, not evidence that the blockers below are closed.
+
 ## Remaining blockers
 
 1. Validate the live PCP/reclaim choreography on the exact stock V65x kernel
@@ -104,8 +111,9 @@ same indexing sequence as V643. The required address is therefore
 `+0x026d1900`; the corresponding data range was checked in the reconstructed
 V65x ELF.
 
-Until every blocker is closed, V655/V665/V667 remain unsupported and no APK or
-ADB release should offer a root button for them.
+Until every blocker is closed, V655/V665/V667 remain unsupported by stable
+releases. No APK or boot-time auto-root is offered for them; the separate
+pre-release is manual ADB only and prominently marked untested.
 
 ## Static reclaim audit
 
@@ -176,8 +184,10 @@ The stripped candidate has SHA-256:
 48c64c0d8b85e62dd5db1125b32ea12cff91590d58138ad4a742ae19583b5db9
 ```
 
-Its output contains `ANALYSIS_ONLY.txt` and `load_authorized=false`. No loader,
-APK integration or device deployment is provided for this candidate.
+Its original output contains `ANALYSIS_ONLY.txt` and `load_authorized=false`.
+The experimental ADB pre-release packages that unchanged candidate together
+with a separate guarded loader, but only after an explicit acknowledgement;
+there is no APK integration or unattended deployment.
 
 ## Host validation
 

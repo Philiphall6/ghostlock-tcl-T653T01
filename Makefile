@@ -19,7 +19,7 @@ CFLAGS := -O2 -Wall -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function
   -include stubs/dl_stub.h
 LDFLAGS := -static -pthread
 
-.PHONY: all clean ghostlock-tcl-v643-lab profile-guard-test profile-manifest-test tcl-v643-stack-geometry-test \
+.PHONY: all clean ghostlock-tcl-v643-lab ghostlock-tcl-v65x-experimental profile-guard-test profile-manifest-test tcl-v643-stack-geometry-test \
 	tcl-v643-syscall-stack-model-test \
 	tcl-v643-pi-blocked-on-model-test \
 	tcl-v643-pselect-rounds-model-test \
@@ -44,8 +44,16 @@ ghostlock: $(SRCS) $(PROFILE_DEPS)
 ghostlock-tcl-v643-lab: $(SRCS) $(PROFILE_DEPS)
 	$(NDK_CC) $(CFLAGS) -DTCL_V643_LAB_ARMING=1 $(LDFLAGS) $(SRCS) -o $@
 
+# Explicitly dangerous V655/V665/V667 pre-release build.  The ordinary
+# target remains fail-closed.  This binary accepts only the exact
+# 5.15.192-android14-11 profile and still requires a runtime acknowledgement.
+ghostlock-tcl-v65x-experimental: $(SRCS) $(PROFILE_DEPS)
+	$(NDK_CC) $(CFLAGS) -DTCL_V65X_EXPERIMENTAL_ARMING=1 \
+		$(LDFLAGS) $(SRCS) -o $@
+
 clean:
-	rm -f ghostlock ghostlock-tcl-v643-lab tcl-v643-mcast-helper \
+	rm -f ghostlock ghostlock-tcl-v643-lab ghostlock-tcl-v65x-experimental \
+		tcl-v643-mcast-helper \
 		tcl-v643-uring-perf-probe
 
 # Android/device-side non-arming feasibility probe for a PFN-free capture

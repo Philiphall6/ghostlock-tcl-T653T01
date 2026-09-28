@@ -18,11 +18,20 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifndef EXPECTED_RELEASE
 #define EXPECTED_RELEASE "5.15.180-android14-11"
+#endif
 #define MAX_SELINUX_POLICY (16U * 1024U * 1024U)
-#define V643_SELINUX_POLICY_SIZE 1030054U
+#ifndef EXPECTED_SELINUX_POLICY_SIZE
+#define EXPECTED_SELINUX_POLICY_SIZE 1030054U
+#endif
+#ifndef EXPECTED_SELINUX_POLICY_SIZE_ALT
+#define EXPECTED_SELINUX_POLICY_SIZE_ALT EXPECTED_SELINUX_POLICY_SIZE
+#endif
 #define REQUIRED_MANAGER_PACKAGE "com.philiphall6.resukisu.tcl"
+#ifndef TCL_LAB_PREFIX
 #define TCL_LAB_PREFIX "/data/local/tmp/tcl-v643-resukisu-lab/"
+#endif
 
 static int read_first(const char *path);
 
@@ -77,13 +86,15 @@ static uint32_t load_le32(const unsigned char *p) {
          ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
-static int verify_v643_policy_header(const unsigned char *policy,
-                                     size_t size) {
+static int verify_tcl_policy_header(const unsigned char *policy,
+                                    size_t size) {
   const uint32_t policy_magic = 0xf97cff8cU;
   const uint32_t policy_version = 30U;
   const uint32_t policy_config = 0xc0000001U;
   static const unsigned char target[] = "SE Linux";
-  if (size != V643_SELINUX_POLICY_SIZE || load_le32(policy) != policy_magic) {
+  if ((size != EXPECTED_SELINUX_POLICY_SIZE &&
+       size != EXPECTED_SELINUX_POLICY_SIZE_ALT) ||
+      load_le32(policy) != policy_magic) {
     errno = EINVAL;
     return -1;
   }
@@ -104,7 +115,7 @@ static int verify_v643_policy_header(const unsigned char *policy,
   return 0;
 }
 
-static int verify_v643_policycaps(void) {
+static int verify_tcl_policycaps(void) {
   static const struct {
     const char *name;
     char expected;
@@ -182,7 +193,7 @@ static int restore_network_policy_state(void) {
     used += (size_t)n;
   }
   close(source);
-  if (verify_v643_policy_header(policy, used) != 0) {
+  if (verify_tcl_policy_header(policy, used) != 0) {
     free(policy);
     return -1;
   }
@@ -208,7 +219,7 @@ static int restore_network_policy_state(void) {
     if (written >= 0) errno = EIO;
     return -1;
   }
-  return verify_v643_policycaps();
+  return verify_tcl_policycaps();
 }
 
 static long monotonic_ms(void) {
@@ -501,14 +512,14 @@ static int restore_worker(void) {
  * child.  The one-shot handoff itself never waits indefinitely. */
 static int restore_enforcing_bounded(void) {
   if (read_first(enforce_path()) == '1')
-    return verify_v643_policycaps() == 0 ? 0 : 5;
+    return verify_tcl_policycaps() == 0 ? 0 : 5;
   pid_t child = fork();
   if (child < 0) return 126;
   if (child == 0) _exit(restore_worker());
   int result = wait_bounded(child, 5000);
   if (result != 0) return result;
   if (read_first(enforce_path()) != '1') return 4;
-  return verify_v643_policycaps() == 0 ? 0 : 5;
+  return verify_tcl_policycaps() == 0 ? 0 : 5;
 }
 
 static void detach_stdio(void) {
