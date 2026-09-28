@@ -5,6 +5,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 ACTIVITY="$ROOT/src/lab/tcl/rootverifier/MainActivity.java"
 SERVICE="$ROOT/src/lab/tcl/rootverifier/AutoRootService.java"
 STATE="$ROOT/src/lab/tcl/rootverifier/AutoRootState.java"
+PROFILE="$ROOT/src/lab/tcl/rootverifier/TclRootProfile.java"
 RECEIVER="$ROOT/src/lab/tcl/rootverifier/BootReceiver.java"
 MANIFEST="$ROOT/AndroidManifest.xml"
 
@@ -17,20 +18,33 @@ require() {
   }
 }
 
-# Opt-in state is false by default and tied to the one exact validated profile.
+# Opt-in state is false by default and tied to one recognized exact profile.
 require 'getBoolean(ENABLED, false)' "$STATE"
-require 'V8-T653T01-LF1V643|5.15.180-android14-11|android14' "$STATE"
+require 'TclRootProfile.fromAuthorizationKey' "$STATE"
+require 'enableForValidatedProfile' "$STATE"
 require 'disarmAfterIncompletePreviousBoot' "$STATE"
 require '|| !AutoRootState.isEnabled(context)) return;' "$RECEIVER"
+
+# Each enabled firmware is exact. Experimental families retain their runtime
+# acknowledgements and never fall through to a generic V6xx profile.
+for firmware in V8-T653T01-LF1V637 V8-T653T01-LF1V643 \
+    V8-T653T01-LF1V655 V8-T653T01-LF1V665 V8-T653T01-LF1V667; do
+  require "$firmware" "$PROFILE"
+done
+require 'TCL_V637_UNTESTED_ACK=I_ACCEPT_V637_KERNEL_PANIC_RISK' "$PROFILE"
+require 'TCL_V65X_UNTESTED_ACK=I_ACCEPT_V65X_KERNEL_PANIC_RISK' "$PROFILE"
+require 'static TclRootProfile exact(String state' "$PROFILE"
 
 # The TV control remains grey until this app itself has working su + driver.
 require 'autoRoot.setEnabled(false)' "$ACTIVITY"
 require 'else if (appRootValidated)' "$ACTIVITY"
 require 'su.contains("uid=0") && driver.contains("Kernel Version:")' "$ACTIVITY"
-require 'exact_v643_profile=' "$ACTIVITY"
+require 'exact_supported_profile=' "$ACTIVITY"
+require 'showExperimentalRootWarning' "$ACTIVITY"
 
-# Boot worker stays V643-exact, one-shot, volatile and non-rebooting.
-require '5.15.180-android14-11|14|1|green|locked|enforcing|Enforcing' "$SERVICE"
+# Boot worker stays authorization-exact, one-shot, volatile and non-rebooting.
+require 'AutoRootState.authorizedProfile' "$SERVICE"
+require '!profile.id.equals(detected.id)' "$SERVICE"
 require 'consumeRootAttemptForCurrentBoot' "$SERVICE"
 require 'markAttemptStarted' "$SERVICE"
 require 'GHOST_REBOOT=0' "$SERVICE"
@@ -56,4 +70,4 @@ if [ "$gate_line" -ge "$attempt_line" ]; then
 fi
 
 printf '%s\n' \
-  'PASS: auto-root is opt-in, root-gated, V643-exact, one-shot and anti-loop'
+  'PASS: auto-root is opt-in, root-gated, exact-profile, one-shot and anti-loop'

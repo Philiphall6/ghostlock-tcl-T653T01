@@ -3,11 +3,8 @@ package lab.tcl.rootverifier;
 import android.content.Context;
 import android.content.SharedPreferences;
 
-/** Persistent, fail-closed state for the opt-in V643 boot automation. */
+/** Persistent, fail-closed state for the opt-in, exact-profile automation. */
 final class AutoRootState {
-    static final String PROFILE_V643 =
-            "V8-T653T01-LF1V643|5.15.180-android14-11|android14";
-
     private static final String PREFS = "auto_root_settings";
     private static final String ENABLED = "enabled";
     private static final String AUTHORIZED_PROFILE = "authorized_profile";
@@ -24,16 +21,24 @@ final class AutoRootState {
     static boolean isEnabled(Context context) {
         SharedPreferences prefs = prefs(context);
         return prefs.getBoolean(ENABLED, false)
-                && PROFILE_V643.equals(prefs.getString(AUTHORIZED_PROFILE, ""));
+                && TclRootProfile.fromAuthorizationKey(
+                        prefs.getString(AUTHORIZED_PROFILE, "")) != null;
     }
 
-    static boolean enableForValidatedV643(Context context) {
+    static String authorizedProfile(Context context) {
+        return prefs(context).getString(AUTHORIZED_PROFILE, "");
+    }
+
+    static boolean enableForValidatedProfile(Context context,
+            TclRootProfile profile) {
+        if (profile == null) return false;
         return prefs(context).edit()
                 .putBoolean(ENABLED, true)
-                .putString(AUTHORIZED_PROFILE, PROFILE_V643)
+                .putString(AUTHORIZED_PROFILE, profile.authorizationKey())
                 .remove(PENDING_BOOT)
                 .putString(LAST_STATUS,
-                        "Enabled after a validated V643 root session")
+                        "Enabled after a validated " + profile.firmware
+                                + " root session")
                 .commit();
     }
 
@@ -61,7 +66,7 @@ final class AutoRootState {
     static boolean markAttemptStarted(Context context, String bootId) {
         return prefs(context).edit()
                 .putString(PENDING_BOOT, bootId)
-                .putString(LAST_STATUS, "Automatic V643 attempt started")
+                .putString(LAST_STATUS, "Automatic exact-profile attempt started")
                 .commit();
     }
 
@@ -70,7 +75,7 @@ final class AutoRootState {
                 .remove(PENDING_BOOT)
                 .putString(LAST_SUCCESS_BOOT, bootId)
                 .putString(LAST_STATUS,
-                        "Automatic V643 root validated for boot " + bootId)
+                        "Automatic temporary root validated for boot " + bootId)
                 .apply();
     }
 

@@ -33,9 +33,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Opt-in, V643-only boot worker.  It deliberately duplicates the already
- * validated manual chain instead of starting an Activity from the background.
- * Every security and integrity gate remains fail-closed.
+ * Opt-in exact-profile boot worker.  V643 is hardware validated; V637 and
+ * V65x can only be armed after a successful manual session and an explicit
+ * warning.  Every profile keeps independent firmware, kernel, policy and
+ * payload-integrity gates.
  */
 public final class AutoRootService extends Service {
     static final String ACTION_BOOT_AUTO_ROOT =
@@ -90,7 +91,16 @@ public final class AutoRootService extends Service {
 
                 updateNotification(getString(
                         R.string.auto_root_notification_preflight), true);
-                AutoRootRunner runner = new AutoRootRunner(this);
+                TclRootProfile profile = TclRootProfile.fromAuthorizationKey(
+                        AutoRootState.authorizedProfile(this));
+                if (profile == null) {
+                    AutoRootState.disable(this,
+                            "Disabled: authorized profile is no longer supported");
+                    finishWorker(getString(
+                            R.string.auto_root_notification_preflight_refused), false);
+                    return;
+                }
+                AutoRootRunner runner = new AutoRootRunner(this, profile);
                 AutoRootRunner.Outcome outcome = runner.run(bootId);
                 if (outcome.success) {
                     AutoRootState.markSuccess(this, bootId);
@@ -205,34 +215,25 @@ public final class AutoRootService extends Service {
         return value.replace('\n', ' ').replace('\r', ' ');
     }
 
-    /** Headless copy of the exact, hardware-validated V643 root route. */
+    /** Headless copy of the exact manual route for the authorized profile. */
     private static final class AutoRootRunner {
         private static final String RESUKISU_PACKAGE =
                 "com.philiphall6.resukisu.tcl";
-        private static final String GHOSTLOCK_SHA256 =
-                "6529ef8f76bd6dda073850f5fe227b808bd05e1a1a90e13cff24d06bb1d91b91";
         private static final String MCAST_HELPER_SHA256 =
                 "4ca5692192b0a7598243f5070adf1e676ccd943aad4a292579ea69d38bbf1019";
-        private static final String TCL_RESUKISU_HANDOFF_SHA256 =
-                "e519266c0a9774b63e48c8df7c813284073c320314121952bae18ecbfd5fd299";
-        private static final String TCL_RESUKISU_PREFLIGHT_SHA256 =
-                "8ce8a4dc9dec167ce5e04858e3cd83c1a7a0ec35573d55010aae88234d43a7c0";
         private static final String RESUKISU_KSUD32_SHA256 =
                 "528c80259613a1e27a90d8f202fda33ecceba9c1fd42e1d807fdbbc859af5e68";
-        private static final String RESUKISU_MODULE_SHA256 =
-                "b6aeb907bd468852a11d7a90d121df87e1716f3b9549c69ee0190607e0d5f50c";
-        private static final String V643_POLICY_SHA256 =
-                "1930f6750090c816a3ea8cc32f752e2eec9b9e6d10d2851fe001fd690b069819";
-        private static final String V643_POLICY_SIZE = "1030054";
         private static final String ROOT_ATTEMPT_PREFS = "root_attempt_gate";
         private static final String ROOT_ATTEMPT_BOOT_ID = "consumed_boot_id";
         private static final String GHOST_PID_FILE =
                 "/data/local/tmp/.tcl_root_verifier_ghost.pid";
 
         private final Context context;
+        private final TclRootProfile profile;
 
-        AutoRootRunner(Context context) {
+        AutoRootRunner(Context context, TclRootProfile profile) {
             this.context = context.getApplicationContext();
+            this.profile = profile;
         }
 
         static final class Outcome {
@@ -295,19 +296,20 @@ public final class AutoRootService extends Service {
                 return "Required TCL ReSukiSU manager is not installed";
             }
             File nativeDir = new File(context.getApplicationInfo().nativeLibraryDir);
-            File ghost = new File(nativeDir, "libtclghostlock.so");
+            File ghost = profile.ghost(nativeDir);
             File helper = new File(nativeDir, "libtclmcast.so");
-            File handoff = new File(nativeDir, "libtclresukisuhandoff.so");
-            File preflight = new File(nativeDir, "libtclresukisupreflight.so");
+            File handoff = profile.handoff(nativeDir);
+            File preflight = profile.preflight(nativeDir);
             File ksud = new File(nativeDir, "libresukisuksud.so");
-            File module = new File(nativeDir, "libtclresukisumodule.so");
-            if (!GHOSTLOCK_SHA256.equals(sha256(ghost))
+            File module = profile.module(nativeDir);
+            if (!profile.ghostSha256.equals(sha256(ghost))
                     || !MCAST_HELPER_SHA256.equals(sha256(helper))
-                    || !TCL_RESUKISU_HANDOFF_SHA256.equals(sha256(handoff))
-                    || !TCL_RESUKISU_PREFLIGHT_SHA256.equals(sha256(preflight))
+                    || !profile.handoffSha256.equals(sha256(handoff))
+                    || !profile.preflightSha256.equals(sha256(preflight))
                     || !RESUKISU_KSUD32_SHA256.equals(sha256(ksud))
-                    || !RESUKISU_MODULE_SHA256.equals(sha256(module)))
-                return "Embedded V643 payload integrity check failed";
+                    || !profile.moduleSha256.equals(sha256(module)))
+                return "Embedded " + profile.id
+                        + " payload integrity check failed";
             return null;
         }
 
@@ -337,8 +339,6 @@ public final class AutoRootService extends Service {
                     + "'^(kernelsu|resukisu|kowsu) ' /proc/modules "
                     + "2>/dev/null || true", 45);
 
-            String expectedState = "V8-T653T01-LF1V643|"
-                    + "5.15.180-android14-11|14|1|green|locked|enforcing|Enforcing";
             String state = lineValue(probe, "STATE");
             String uptimeText = lineValue(probe, "UPTIME");
             String policyHash = lineValue(probe, "POLICY_SHA");
@@ -352,15 +352,15 @@ public final class AutoRootService extends Service {
                 return "Unable to read uptime; no automatic attempt started\n"
                         + probe;
             }
-            if (!expectedState.equals(state))
-                return "Not the validated V643 security profile\n" + probe;
+            TclRootProfile detected = TclRootProfile.exact(
+                    state, policyHash, policySize);
+            if (detected == null || !profile.id.equals(detected.id))
+                return "Live profile does not match the authorized exact profile "
+                        + profile.firmware + "\n" + probe;
             if (uptime > 900)
                 return "Boot is not fresh (uptime=" + uptime
                         + " s); no automatic attempt started";
-            if (!V643_POLICY_SHA256.equals(policyHash)
-                    || !V643_POLICY_SIZE.equals(policySize))
-                return "Vendor SELinux policy identity differs; no attempt started";
-            if (!"11100100".equals(policyCaps))
+            if (!TclRootProfile.POLICY_CAPS.equals(policyCaps))
                 return "SELinux policy capabilities are altered; no attempt started";
             if (!"0".equals(modules))
                 return "A root module is already loaded; no attempt started";
@@ -390,12 +390,12 @@ public final class AutoRootService extends Service {
 
         private String runGhostLockViaLocalAdb(String bootId) {
             File nativeDir = new File(context.getApplicationInfo().nativeLibraryDir);
-            File ghost = new File(nativeDir, "libtclghostlock.so");
+            File ghost = profile.ghost(nativeDir);
             File helper = new File(nativeDir, "libtclmcast.so");
-            File handoff = new File(nativeDir, "libtclresukisuhandoff.so");
-            File preflight = new File(nativeDir, "libtclresukisupreflight.so");
+            File handoff = profile.handoff(nativeDir);
+            File preflight = profile.preflight(nativeDir);
             File ksud = new File(nativeDir, "libresukisuksud.so");
-            File module = new File(nativeDir, "libtclresukisumodule.so");
+            File module = profile.module(nativeDir);
 
             String refusal = validateRootStartPreconditions();
             if (refusal != null) return "SECURITY REFUSAL:\n" + refusal;
@@ -404,11 +404,13 @@ public final class AutoRootService extends Service {
                 return "PREFLIGHT REFUSED: GhostLock not started.\n"
                         + preflightReport;
 
-            String statusPath = "/data/local/tmp/.tcl_resukisu_handoff_"
-                    + bootId + ".status";
+            String statusPath = profile.statusPath(bootId);
             String exploitCommand = "echo $$ > " + quote(GHOST_PID_FILE)
                     + "; exec " + quote(ghost.getAbsolutePath()) + " --cred";
-            String command = "cd /data/local/tmp && timeout 180 env "
+            int exploitTimeout = profile.experimental ? 240 : 180;
+            String command = "cd /data/local/tmp && timeout "
+                    + exploitTimeout + " env "
+                    + profile.riskEnvironmentPrefix()
                     + "TCL_CAPTURE_FORCE_PERF=1 "
                     + "TCL_PERF_WITNESS=1 TCL_PERF_WITNESS_ATTEMPTS=5 "
                     + "TCL_PERF_RING_LOOPS=20000 "
@@ -425,7 +427,7 @@ public final class AutoRootService extends Service {
                     + "GHOST_SID_SCAN=0 FOPS_MAX_ATTEMPTS=3 "
                     + "CRED_ATTEMPTS=1 KSNITCH_VERBOSE=0 "
                     + "/system/bin/sh -c " + quote(exploitCommand);
-            String output = runLocalAdbShell(command, 200);
+            String output = runLocalAdbShell(command, exploitTimeout + 20);
             if (output.length() > 14000)
                 output = output.substring(output.length() - 14000);
 

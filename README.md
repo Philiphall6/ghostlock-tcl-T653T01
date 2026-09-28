@@ -1,10 +1,9 @@
 # GhostLock for TCL T653T01
 
-Experimental temporary-root port for the **TCL T653T01** platform running:
-
-- firmware `V8-T653T01-LF1V643`;
-- Android 14;
-- kernel `5.15.180-android14-11`.
+Experimental temporary-root port for exact **TCL T653T01** Android 14 builds.
+V643 on kernel `5.15.180-android14-11` is hardware validated. V637 on the same
+kernel and V655/V665/V667 on `5.15.192-android14-11` are opt-in experimental
+profiles that have not been tested on matching real hardware.
 
 Version 1.0 was validated on an owned C855 television with a locked bootloader,
 green Verified Boot and SELinux restored to enforcing after setup. It does not
@@ -43,11 +42,10 @@ The APK provides an English/French TV interface, device checks, local ADB
 authorization and the temporary GhostLock-to-ReSukiSU handoff. Install the TCL
 ReSukiSU manager first, then install and open the GhostLock APK.
 
-The v1.1 source also contains an optional V643-only auto-root control. It stays
-grey until this application itself has a validated `su` UID 0 grant and the
-exact V643/AVB/SELinux/local-ADB profile is confirmed. Enabling it schedules
-one volatile attempt after `BOOT_COMPLETED`; an incomplete attempt disarms the
-next boot instead of creating a reboot loop.
+The pre-release also contains an optional exact-profile auto-root control. It
+stays grey until this application receives a validated `su` UID 0 grant after
+a successful manual session. Experimental profiles display an additional
+warning. An incomplete boot attempt disables automation on the following boot.
 
 See [android-app/README.md](android-app/README.md) for the controls and setup.
 
@@ -60,23 +58,24 @@ See [docs/ADB_EDITION.md](docs/ADB_EDITION.md) for usage.
 
 ## Scope
 
-- Supported build: TCL T653T01 V643 only; hardware validation was performed on
-  a C855.
+- Hardware-validated build: TCL T653T01 V643 (validation performed on a C855).
+- Experimental exact builds: V637, V655, V665 and V667; not hardware tested.
 - No firmware flashing, Fastboot operation or bootloader unlock.
 - No persistent kernel/partition modification. Optional boot automation only
-  re-runs the volatile V643 chain after explicit in-app opt-in.
+  re-runs the exact volatile profile after explicit in-app opt-in.
 - Rebooting ends the root session.
 - Other firmware versions require separate validation.
 
 ## V637 / V655 / V665 / V667 experimental pre-release
 
 The [v1.1.0-pre2](https://github.com/Philiphall6/ghostlock-tcl-T653T01/releases/tag/v1.1.0-pre2)
-ADB-only pre-release provides separate guarded bundles for exact V637 and
-V655/V665/V667 builds. None of those matching firmware versions has been
+ADB bundles provide separate guarded binaries for exact V637 and
+V655/V665/V667 builds. The newer `v1.1.0-pre4` pre-release additionally makes
+those exact profiles available in the TV APK behind a mandatory warning. None
+of those matching firmware versions has been
 tested on real hardware. They may cause a kernel panic, reboot, network/ADB
-loss or require a power cycle. The ordinary build remains fail-closed, both
-profiles remain `analysis_only`, and the APK/boot auto-root remains strictly
-blocked for these experimental builds.
+loss or require a power cycle. Their manifests remain `analysis_only`; only
+the explicitly named experimental APK payloads can arm them.
 
 V637 has high offline compatibility with V643: identical BTF/configuration,
 28/28 matching critical offsets, 163/163 ReSukiSU CRCs and an identical

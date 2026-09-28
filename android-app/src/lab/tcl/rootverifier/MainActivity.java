@@ -78,12 +78,11 @@ public final class MainActivity extends Activity {
             "/data/local/tmp/.tcl_root_verifier_ghost.pid";
     private static final String ROOT_ATTEMPT_PREFS = "root_attempt_gate";
     private static final String ROOT_ATTEMPT_BOOT_ID = "consumed_boot_id";
-    /* The direct-broker route is enabled only for the exact V643 profile.
-     * It was validated twice on hardware, including vendor-policy/network
-     * restoration and a parked UID-0 broker with no automatic reboot. */
+    /* V643 is hardware validated.  Experimental binaries for V637 and V65x
+     * remain independently build-, firmware-, kernel- and policy-gated. */
     private static final boolean ROOT_ROUTE_VALIDATED = true;
     private static final String ROOT_ROUTE_HOLD_REASON =
-            "ROOT REFUSED — hardware profile or V643 checks do not match.";
+            "ROOT REFUSED — no exact supported T653T01 profile matched.";
     private TextView result;
     private Button refresh;
     private Button adbKey;
@@ -320,21 +319,35 @@ public final class MainActivity extends Activity {
                     updateAutoRootButton(false);
                     return;
                 }
+                String profileKey = lineValue(proof, "PROFILE_KEY");
+                TclRootProfile profile =
+                        TclRootProfile.fromAuthorizationKey(profileKey);
+                if (profile == null) {
+                    result.setText(getString(R.string.auto_root_refused)
+                            + "\n\nProfile authorization key is not recognized.");
+                    updateAutoRootButton(false);
+                    return;
+                }
+                String confirmation = profile.experimental
+                        ? getString(R.string.auto_root_confirm_experimental,
+                                profile.firmware, profile.kernel)
+                        : getString(R.string.auto_root_confirm_message);
                 new AlertDialog.Builder(this)
                         .setTitle(R.string.auto_root_confirm_title)
-                        .setMessage(R.string.auto_root_confirm_message)
+                        .setMessage(confirmation)
                         .setNegativeButton(R.string.cancel, (dialog, which) -> {
                             updateAutoRootButton(true);
                             autoRoot.requestFocus();
                         })
                         .setPositiveButton(R.string.enable, (dialog, which) -> {
                             boolean stored = AutoRootState
-                                    .enableForValidatedV643(this);
+                                    .enableForValidatedProfile(this, profile);
                             audit("AUTO_ROOT_ENABLE stored=" + stored);
                             updateAutoRootButton(stored);
                             result.setText(stored
-                                    ? R.string.auto_root_enabled
-                                    : R.string.auto_root_store_failed);
+                                    ? getString(R.string.auto_root_enabled_profile,
+                                            profile.firmware)
+                                    : getString(R.string.auto_root_store_failed));
                             autoRoot.requestFocus();
                         })
                         .show();
@@ -350,10 +363,11 @@ public final class MainActivity extends Activity {
         String rootProbe = commandWithTimeout(new String[]{
                 "/system/bin/sh", "-c",
                 "su -c 'printf \"ROOT_ID=\"; id; "
-                        + "printf \"STATE=%s|%s|%s|%s|%s|%s|%s\\n\" "
+                        + "printf \"STATE=%s|%s|%s|%s|%s|%s|%s|%s\\n\" "
                         + "\"$(getprop ro.software.version_id)\" "
                         + "\"$(uname -r)\" "
                         + "\"$(getprop ro.build.version.release)\" "
+                        + "\"$(getprop sys.boot_completed)\" "
                         + "\"$(getprop ro.boot.verifiedbootstate)\" "
                         + "\"$(getprop ro.boot.vbmeta.device_state)\" "
                         + "\"$(getprop ro.boot.veritymode)\" "
@@ -367,21 +381,23 @@ public final class MainActivity extends Activity {
                         + "printf \"MODULE=\"; grep -Ec \"^kernelsu \" "
                         + "/proc/modules 2>/dev/null || true'"}, 12);
         String adb = runLocalAdbShell("echo ADB_LOCAL_OK", 15);
-        String expected = "STATE=V8-T653T01-LF1V643|"
-                + "5.15.180-android14-11|14|green|locked|enforcing|Enforcing";
+        String state = lineValue(rootProbe, "STATE");
+        String policySha = lineValue(rootProbe, "POLICY_SHA");
+        String policySize = lineValue(rootProbe, "POLICY_SIZE");
+        TclRootProfile profile = TclRootProfile.exact(
+                state, policySha, policySize);
         boolean root = rootProbe.contains("ROOT_ID=uid=0");
-        boolean exactProfile = rootProbe.contains(expected)
-                && rootProbe.contains("POLICY_SHA=" + V643_POLICY_SHA256)
-                && rootProbe.contains("POLICY_SIZE=" + V643_POLICY_SIZE)
-                && rootProbe.contains("MODULE=1");
+        boolean exactProfile = profile != null && rootProbe.contains("MODULE=1");
         boolean driverActive = driver.contains("Kernel Version:");
         boolean adbReady = adb.contains("ADB_LOCAL_OK");
         if (root && exactProfile && driverActive && adbReady)
-            return "AUTO_ROOT_ELIGIBLE\n" + rootProbe
+            return "AUTO_ROOT_ELIGIBLE\nPROFILE_KEY="
+                    + profile.authorizationKey() + "\nPROFILE_ID=" + profile.id
+                    + "\nEXPERIMENTAL=" + profile.experimental + "\n" + rootProbe
                     + "\nDRIVER=" + driver + "\n" + adb;
         return "AUTO_ROOT_NOT_ELIGIBLE"
                 + "\napp_su_uid0=" + root
-                + "\nexact_v643_profile=" + exactProfile
+                + "\nexact_supported_profile=" + exactProfile
                 + "\nvolatile_driver=" + driverActive
                 + "\nlocal_adb=" + adbReady
                 + "\n\n" + rootProbe
@@ -585,6 +601,10 @@ public final class MainActivity extends Activity {
     }
 
     private void startRootChain() {
+        startRootChain(null);
+    }
+
+    private void startRootChain(String acknowledgedExperimentalProfile) {
         if (rootStarting) return;
         if (!ROOT_ROUTE_VALIDATED) {
             result.setText(ROOT_ROUTE_HOLD_REASON);
@@ -599,19 +619,26 @@ public final class MainActivity extends Activity {
             String outcome;
             boolean active = false;
             boolean attempted = false;
-            String refusal = validateRootStartPreconditions();
-            if (refusal != null) {
-                outcome = "ROOT REFUSED BEFORE EXPLOIT\n\n" + refusal;
-                audit("ROOT_START_REFUSED " + oneLineTail(refusal, 1000));
+            ProfileValidation validation = validateRootStartProfile();
+            TclRootProfile profile = validation.profile;
+            if (validation.error != null) {
+                outcome = "ROOT REFUSED BEFORE EXPLOIT\n\n" + validation.error;
+                audit("ROOT_START_REFUSED "
+                        + oneLineTail(validation.error, 1000));
+            } else if (profile.experimental
+                    && !profile.id.equals(acknowledgedExperimentalProfile)) {
+                rootStarting = false;
+                runOnUiThread(() -> showExperimentalRootWarning(profile));
+                return;
             } else {
-                String resukisu = buildReSukiSuPreflightReport();
+                String resukisu = buildReSukiSuPreflightReport(profile);
                 boolean bundleReady = resukisu.contains(
                                 "ARMv7 manager       : PRESENT")
                         && resukisu.contains("ARMv7 ksud         : VALID")
                         && resukisu.contains("AArch64/GKI ksud   : VALID")
                         && resukisu.contains("Exact TCL module   : VALID")
                         && resukisu.contains("Expected TCL kernel: YES")
-                        && resukisu.contains("Build T653T01 V643 : YES");
+                        && resukisu.contains("Exact TCL firmware : YES");
                 if (!bundleReady) {
                     outcome = "ROOT REFUSED — RESUKISU BUNDLE DOES NOT MATCH\n\n"
                             + resukisu;
@@ -627,7 +654,7 @@ public final class MainActivity extends Activity {
                         synchronized (brokerLock) {
                             closeBrokerLocked();
                         }
-                        outcome = runGhostLockViaLocalAdb();
+                        outcome = runGhostLockViaLocalAdb(profile);
                         active = outcome.contains(
                                 "TCL_DIRECT_RESUKISU_READY");
                         resukisuActive = active;
@@ -650,6 +677,24 @@ public final class MainActivity extends Activity {
                 result.setText(finalOutcome);
             });
         }, "adb-ghostlock").start();
+    }
+
+    private void showExperimentalRootWarning(TclRootProfile profile) {
+        result.setText(getString(R.string.experimental_root_warning,
+                profile.firmware, profile.kernel));
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.experimental_root_title)
+                .setMessage(getString(R.string.experimental_root_warning,
+                        profile.firmware, profile.kernel))
+                .setCancelable(false)
+                .setNegativeButton(R.string.cancel, (dialog, which) -> {
+                    startRoot.setEnabled(true);
+                    startRoot.requestFocus();
+                    audit("EXPERIMENTAL_ROOT_CANCELLED profile=" + profile.id);
+                })
+                .setPositiveButton(R.string.experimental_accept,
+                        (dialog, which) -> startRootChain(profile.id))
+                .show();
     }
 
     private void stopRootSession() {
@@ -699,12 +744,23 @@ public final class MainActivity extends Activity {
                     return;
                 }
 
-                guidedStatus("ALL-IN-ONE — step 3/6: checking ReSukiSU/V643…");
-                String resukisu = buildReSukiSuPreflightReport();
+                ProfileValidation profileValidation = validateRootStartProfile();
+                if (profileValidation.error != null
+                        || profileValidation.profile == null
+                        || profileValidation.profile.experimental) {
+                    failure = "STEP 3/6 REFUSED — use the main root button for "
+                            + "an experimental profile.\n\n"
+                            + (profileValidation.error == null ? ""
+                                    : profileValidation.error);
+                    return;
+                }
+                TclRootProfile profile = profileValidation.profile;
+                guidedStatus("ALL-IN-ONE — step 3/6: checking exact ReSukiSU profile…");
+                String resukisu = buildReSukiSuPreflightReport(profile);
                 boolean resukisuReady = resukisu.contains("ARMv7 manager       : PRESENT")
                         && resukisu.contains("ARMv7 ksud         : VALID")
                         && resukisu.contains("Expected TCL kernel: YES")
-                        && resukisu.contains("Build T653T01 V643 : YES")
+                        && resukisu.contains("Exact TCL firmware : YES")
                         && resukisu.contains("Exact TCL module   : VALID");
                 if (!resukisuReady) {
                     failure = "STEP 3/6 REFUSED\n\n" + resukisu;
@@ -729,7 +785,7 @@ public final class MainActivity extends Activity {
 
                 guidedStatus("ALL-IN-ONE — step 5/6: one-shot W2 to ReSukiSU…");
                 rootStarting = true;
-                String ghost = runGhostLockViaLocalAdb();
+                String ghost = runGhostLockViaLocalAdb(profile);
                 rootStarting = false;
                 active = ghost.contains("TCL_DIRECT_RESUKISU_READY");
                 resukisuActive = active;
@@ -1149,7 +1205,10 @@ public final class MainActivity extends Activity {
         resukisuPreflight.setEnabled(false);
         result.setText("Checking ReSukiSU ARMv7/AArch64 — no module loaded…");
         new Thread(() -> {
-            String report = buildReSukiSuPreflightReport();
+            ProfileValidation validation = validateRootStartProfile();
+            String report = validation.error == null
+                    ? buildReSukiSuPreflightReport(validation.profile)
+                    : "PROFILE REFUSED\n\n" + validation.error;
             runOnUiThread(() -> {
                 result.setText(report);
                 resukisuPreflight.setEnabled(true);
@@ -1176,17 +1235,17 @@ public final class MainActivity extends Activity {
         }, "resukisu-staging").start();
     }
 
-    private String buildReSukiSuPreflightReport() {
+    private String buildReSukiSuPreflightReport(TclRootProfile profile) {
         File nativeDir = new File(getApplicationInfo().nativeLibraryDir);
         File ksud32 = new File(nativeDir, "libresukisuksud.so");
         File ksud64 = new File(nativeDir, "libresukisuksud64.so");
-        File exactModule = new File(nativeDir, "libtclresukisumodule.so");
+        File exactModule = profile.module(nativeDir);
         String hash32 = sha256(ksud32);
         String hash64 = sha256(ksud64);
         String moduleHash = sha256(exactModule);
         boolean trusted32 = RESUKISU_KSUD32_SHA256.equals(hash32);
         boolean trusted64 = RESUKISU_KSUD64_SHA256.equals(hash64);
-        boolean trustedModule = RESUKISU_MODULE_SHA256.equals(moduleHash);
+        boolean trustedModule = profile.moduleSha256.equals(moduleHash);
 
         String manager = "ABSENT";
         try {
@@ -1204,8 +1263,8 @@ public final class MainActivity extends Activity {
                 + "echo KSUD32_BEGIN; " + shellQuote(ksud32.getAbsolutePath())
                 + " --version 2>&1; echo KSUD32_RC=$?";
         String adb = runLocalAdbShell(command, 30);
-        boolean tclKernel = adb.contains("KERNEL=5.15.180-android14-11");
-        boolean tclBuild = adb.contains("T653T01") && adb.contains("V643");
+        boolean tclKernel = adb.contains("KERNEL=" + profile.kernel);
+        boolean tclBuild = adb.contains("SOFTWARE=" + profile.firmware);
         boolean unloaded = adb.contains("MODULE=absent");
 
         StringBuilder out = new StringBuilder();
@@ -1218,7 +1277,10 @@ public final class MainActivity extends Activity {
         out.append("Exact TCL module   : ").append(trustedModule ? "VALID" : "REFUSED")
                 .append("\n  SHA-256 ").append(moduleHash).append('\n');
         out.append("Expected TCL kernel: ").append(tclKernel ? "YES" : "NO").append('\n');
-        out.append("Build T653T01 V643 : ").append(tclBuild ? "YES" : "NO").append('\n');
+        out.append("Exact TCL firmware : ").append(tclBuild ? "YES" : "NO").append('\n');
+        out.append("Selected profile   : ").append(profile.id)
+                .append(profile.experimental ? " — EXPERIMENTAL" : " — VALIDATED")
+                .append('\n');
         out.append("Generic KMI        : NOT REQUIRED — exact TCL module\n");
         out.append("KernelSU module    : ").append(unloaded ? "NOT LOADED" : "ALREADY PRESENT/UNKNOWN")
                 .append("\n\n").append(adb).append('\n');
@@ -1248,10 +1310,23 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private String validateRootStartPreconditions() {
+    private static final class ProfileValidation {
+        final TclRootProfile profile;
+        final String error;
+        final String probe;
+
+        ProfileValidation(TclRootProfile profile, String error, String probe) {
+            this.profile = profile;
+            this.error = error;
+            this.probe = probe;
+        }
+    }
+
+    private ProfileValidation validateRootStartProfile() {
         String adb = testLocalAdb();
         if (!adb.contains("LOCAL ADB AUTHORIZED"))
-            return "Local ADB is unauthorized or unavailable.\n" + adb;
+            return new ProfileValidation(null,
+                    "Local ADB is unauthorized or unavailable.\n" + adb, adb);
 
         String probe = runLocalAdbShell(
                 "caps=$(for cap in network_peer_controls open_perms "
@@ -1278,39 +1353,45 @@ public final class MainActivity extends Activity {
                 + "'^(kernelsu|resukisu|kowsu) ' /proc/modules "
                 + "2>/dev/null || true", 45);
 
-        String expectedState = "V8-T653T01-LF1V643|"
-                + "5.15.180-android14-11|14|1|green|locked|enforcing|Enforcing";
         String state = lineValue(probe, "STATE");
         String uptimeText = lineValue(probe, "UPTIME");
         String policyHash = lineValue(probe, "POLICY_SHA");
         String policySize = lineValue(probe, "POLICY_SIZE");
         String policyCaps = lineValue(probe, "POLICYCAPS");
         String modules = lineValue(probe, "MODULES");
+        TclRootProfile profile = TclRootProfile.exact(
+                state, policyHash, policySize);
 
         long uptime;
         try {
             uptime = Long.parseLong(uptimeText);
         } catch (Exception e) {
-            return "Unable to read uptime; exploit was not started.\n"
-                    + probe;
+            return new ProfileValidation(null,
+                    "Unable to read uptime; exploit was not started.\n" + probe,
+                    probe);
         }
-        if (!expectedState.equals(state))
-            return "Security profile differs from the validated V643 profile.\n"
-                    + probe;
+        if (profile == null)
+            return new ProfileValidation(null,
+                    "Firmware/kernel/SELinux policy is not an exact supported "
+                            + "profile (" + TclRootProfile.supportedSummary()
+                            + ").\n" + probe,
+                    probe);
         if (uptime > 900)
-            return "Boot is not fresh (uptime=" + uptime
-                    + " s). Reboot the TV before one single attempt.";
-        if (!V643_POLICY_SHA256.equals(policyHash)
-                || !V643_POLICY_SIZE.equals(policySize))
-            return "Vendor SELinux policy does not match; safe restoration is "
-                    + "impossible.\n" + probe;
-        if (!"11100100".equals(policyCaps))
-            return "SELinux policy capabilities are already altered; exploit was not started.\n"
-                    + probe;
+            return new ProfileValidation(profile,
+                    "Boot is not fresh (uptime=" + uptime
+                            + " s). Reboot the TV before one single attempt.",
+                    probe);
+        if (!TclRootProfile.POLICY_CAPS.equals(policyCaps))
+            return new ProfileValidation(profile,
+                    "SELinux policy capabilities are already altered; exploit "
+                            + "was not started.\n" + probe,
+                    probe);
         if (!"0".equals(modules))
-            return "A root module is already loaded; no new attempt is allowed.\n"
-                    + probe;
-        return null;
+            return new ProfileValidation(profile,
+                    "A root module is already loaded; no new attempt is allowed.\n"
+                            + probe,
+                    probe);
+        return new ProfileValidation(profile, null, probe);
     }
 
     private static String lineValue(String text, String key) {
@@ -1322,35 +1403,35 @@ public final class MainActivity extends Activity {
         return "";
     }
 
-    private String runGhostLockViaLocalAdb() {
+    private String runGhostLockViaLocalAdb(TclRootProfile profile) {
         if (!ROOT_ROUTE_VALIDATED)
             return ROOT_ROUTE_HOLD_REASON + "\nGhostLock was not executed.";
         try {
             File nativeDir = new File(getApplicationInfo().nativeLibraryDir);
-            File ghost = new File(nativeDir, "libtclghostlock.so");
+            File ghost = profile.ghost(nativeDir);
             File helper = new File(nativeDir, "libtclmcast.so");
-            File handoff = new File(nativeDir, "libtclresukisuhandoff.so");
-            File resukisuPreflight = new File(nativeDir,
-                    "libtclresukisupreflight.so");
+            File handoff = profile.handoff(nativeDir);
+            File resukisuPreflight = profile.preflight(nativeDir);
             File ksud = new File(nativeDir, "libresukisuksud.so");
-            File module = new File(nativeDir, "libtclresukisumodule.so");
+            File module = profile.module(nativeDir);
             if (!ghost.canExecute() || !helper.canExecute()
                     || !handoff.canExecute() || !resukisuPreflight.canExecute()
                     || !ksud.canExecute() || !module.canRead())
                 return "FAILURE: native binaries are missing or not executable.";
-            if (!GHOSTLOCK_SHA256.equals(sha256(ghost)) ||
+            if (!profile.ghostSha256.equals(sha256(ghost)) ||
                     !MCAST_HELPER_SHA256.equals(sha256(helper)) ||
-                    !TCL_RESUKISU_HANDOFF_SHA256.equals(sha256(handoff)) ||
-                    !TCL_RESUKISU_PREFLIGHT_SHA256.equals(
-                            sha256(resukisuPreflight)) ||
+                    !profile.handoffSha256.equals(sha256(handoff)) ||
+                    !profile.preflightSha256.equals(sha256(resukisuPreflight)) ||
                     !RESUKISU_KSUD32_SHA256.equals(sha256(ksud)) ||
-                    !RESUKISU_MODULE_SHA256.equals(sha256(module)))
+                    !profile.moduleSha256.equals(sha256(module)))
                 return "INTEGRITY REFUSAL: GhostLock, helper, or handoff does "
-                        + "not match the pinned V643 hashes.";
+                        + "not match the pinned " + profile.id + " hashes.";
 
-            String refusal = validateRootStartPreconditions();
-            if (refusal != null)
-                return "SECURITY REFUSAL:\n" + refusal;
+            ProfileValidation validation = validateRootStartProfile();
+            if (validation.error != null || validation.profile == null
+                    || !profile.id.equals(validation.profile.id))
+                return "SECURITY REFUSAL:\n" + (validation.error == null
+                        ? "Profile changed between checks." : validation.error);
 
             String preflightReport = runAdbPreflight();
             if (!preflightReport.contains("ADB SHELL COMPATIBLE 32/64"))
@@ -1360,12 +1441,14 @@ public final class MainActivity extends Activity {
             String bootSession = currentBootSessionId();
             if (!validBootSessionId(bootSession))
                 return "SECURITY REFUSAL: boot identifier is unavailable.";
-            String statusPath = "/data/local/tmp/.tcl_resukisu_handoff_"
-                    + bootSession + ".status";
+            String statusPath = profile.statusPath(bootSession);
             String exploitCommand = "echo $$ > "
                     + shellQuote(GHOST_PID_FILE) + "; exec "
                     + shellQuote(ghost.getAbsolutePath()) + " --cred";
-            String command = "cd /data/local/tmp && timeout 180 env "
+            int exploitTimeout = profile.experimental ? 240 : 180;
+            String command = "cd /data/local/tmp && timeout "
+                    + exploitTimeout + " env "
+                    + profile.riskEnvironmentPrefix()
                     + "TCL_CAPTURE_FORCE_PERF=1 "
                     + "TCL_PERF_WITNESS=1 TCL_PERF_WITNESS_ATTEMPTS=5 "
                     + "TCL_PERF_RING_LOOPS=20000 "
@@ -1389,7 +1472,7 @@ public final class MainActivity extends Activity {
                     + "GHOST_SID_SCAN=0 FOPS_MAX_ATTEMPTS=3 "
                     + "CRED_ATTEMPTS=1 KSNITCH_VERBOSE=0 "
                     + "/system/bin/sh -c " + shellQuote(exploitCommand);
-            String output = runLocalAdbShell(command, 200);
+            String output = runLocalAdbShell(command, exploitTimeout + 20);
             if (output.length() > 14000)
                 output = output.substring(output.length() - 14000);
 

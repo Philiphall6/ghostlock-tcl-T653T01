@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">GhostLock TCL T653T01</string>
-    <string name="app_title">GhostLock TCL T653T01 — Temporary Root V643</string>
+    <string name="app_title">GhostLock TCL T653T01 — Temporary Root</string>
     <string name="action_verify">1 — VERIFY</string>
     <string name="action_local_adb">2 — LOCAL ADB — AUTHORIZE / TEST</string>
     <string name="action_root">3 — TCL ROOT + RESUKISU — TEMPORARY</string>
@@ -10,9 +10,12 @@
     <string name="action_auto_root_requires_root">6 — AUTO ROOT AT STARTUP — ROOT REQUIRED</string>
     <string name="action_auto_root_off">6 — AUTO ROOT AT STARTUP — OFF</string>
     <string name="action_auto_root_on">6 — AUTO ROOT AT STARTUP — ON</string>
-    <string name="chain_notice">Direct chain: V643 checks, GhostLock UID 0, ReSukiSU handoff during the permissive window, then network/SELinux restoration. One attempt per boot.</string>
+    <string name="chain_notice">Exact profiles: V643 (hardware validated), V637 and V655/V665/V667 (experimental, not hardware tested). GhostLock UID 0, ReSukiSU handoff, then network/SELinux restoration. One attempt per boot.</string>
     <string name="adb_key_generating">Generating/loading the dedicated ADB key…\nAndroid may display an authorization prompt: accept it only after pressing this button.</string>
-    <string name="root_starting">Running V643 checks before the temporary-root chain…</string>
+    <string name="root_starting">Checking the exact firmware/kernel/policy profile before temporary root…</string>
+    <string name="experimental_root_title">EXPERIMENTAL PROFILE — KERNEL PANIC RISK</string>
+    <string name="experimental_root_warning">%1$s / %2$s has not been root-tested on real hardware. Offline checks passed, but the TV may freeze, lose networking, panic, or require a power cycle. Root is temporary and no partition is written. Only one attempt is allowed before a full reboot.</string>
+    <string name="experimental_accept">I ACCEPT ONE ATTEMPT</string>
     <string name="manager_missing">Required TCL ReSukiSU manager not found.</string>
     <string name="stop_root_title">Stop temporary root?</string>
     <string name="stop_root_message">The TV will reboot to remove the temporary ReSukiSU module and return to a clean kernel. No boot image, VBMeta, firmware, or partition is modified.</string>
@@ -20,19 +23,21 @@
     <string name="reboot">Reboot</string>
     <string name="stopping_root">Stopping temporary root by rebooting…</string>
     <string name="enable">Enable</string>
-    <string name="auto_root_checking">Checking this app’s root grant, the exact V643 profile and local ADB…</string>
-    <string name="auto_root_refused">AUTO ROOT REFUSED — the app does not currently have a fully validated V643 root session.</string>
+    <string name="auto_root_checking">Checking this app’s root grant, the exact supported profile and local ADB…</string>
+    <string name="auto_root_refused">AUTO ROOT REFUSED — the app does not currently have a fully validated root session for an exact supported profile.</string>
     <string name="auto_root_confirm_title">Enable automatic root at startup?</string>
-    <string name="auto_root_confirm_message">This will run the exact V643 GhostLock/ReSukiSU chain in a foreground service after Android boots. Root remains temporary. A kernel exploit can crash or reboot the TV. Only one attempt is permitted per boot; an incomplete attempt automatically disables this option at the following boot.</string>
-    <string name="auto_root_enabled">AUTOMATIC ROOT ENABLED FOR EXACT V643 ONLY. It will run after the next complete Android boot.</string>
+    <string name="auto_root_confirm_message">This will run the exact, hardware-validated V643 GhostLock/ReSukiSU chain in a foreground service after Android boots. Root remains temporary. A kernel exploit can crash or reboot the TV. Only one attempt is permitted per boot; an incomplete attempt automatically disables this option at the following boot.</string>
+    <string name="auto_root_confirm_experimental">WARNING: automatic root for %1$s / %2$s is experimental and has not been tested on real hardware. A failed attempt can panic the kernel or require a power cycle. One attempt is permitted per boot, and an incomplete attempt disables automation at the following boot. Enable only if you accept this risk.</string>
+    <string name="auto_root_enabled">AUTOMATIC ROOT ENABLED FOR THE EXACT CURRENT PROFILE.</string>
+    <string name="auto_root_enabled_profile">AUTOMATIC ROOT ENABLED FOR EXACT %1$s. It will run after the next complete Android boot.</string>
     <string name="auto_root_disabled">AUTOMATIC ROOT DISABLED.</string>
     <string name="auto_root_store_failed">AUTOMATIC ROOT NOT ENABLED — the preference could not be stored.</string>
     <string name="auto_root_channel">TCL temporary root</string>
-    <string name="auto_root_channel_description">Status of the opt-in V643 automatic temporary-root worker</string>
+    <string name="auto_root_channel_description">Status of the opt-in exact-profile automatic temporary-root worker</string>
     <string name="auto_root_notification_title">TCL T653T01 temporary root</string>
     <string name="auto_root_notification_waiting">Waiting for Android and local ADB</string>
-    <string name="auto_root_notification_preflight">Checking the exact V643 safety profile</string>
-    <string name="auto_root_notification_success">Temporary V643 root is active</string>
+    <string name="auto_root_notification_preflight">Checking the authorized exact safety profile</string>
+    <string name="auto_root_notification_success">Temporary root is active</string>
     <string name="auto_root_notification_disabled">Automatic root is disabled</string>
     <string name="auto_root_notification_safety_disabled">Disabled after an incomplete previous attempt</string>
     <string name="auto_root_notification_already_attempted">No second attempt is allowed during this boot</string>

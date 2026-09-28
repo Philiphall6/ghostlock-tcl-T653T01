@@ -1,13 +1,12 @@
 # GhostLock TCL T653T01 Android TV app
 
-This directory contains the source for the v1.0 APK edition for the TCL
-T653T01 platform. The app performs
+This directory contains the source for the TCL T653T01 APK edition. The app performs
 the same exact-target checks as the ADB edition, starts GhostLock through an
 owner-authorized local ADB connection, and hands the temporary UID-0 process
 directly to the TCL ReSukiSU loader. Root is volatile and disappears after a
 reboot.
 
-## Optional automatic V643 session
+## Exact profiles and optional automatic session
 
 The sixth TV button is always visible. It is grey and cannot be selected while
 the option is off and this app has no validated root grant. It becomes
@@ -16,16 +15,21 @@ session:
 
 - this app's real `su -c id` result is UID 0;
 - the volatile ReSukiSU driver answers;
-- firmware/kernel are exactly V643 / `5.15.180-android14-11`;
+- firmware, kernel and vendor SELinux policy match one exact profile;
 - AVB is green/locked, verity and SELinux are enforcing;
 - the V643 SELinux policy and loaded module match;
 - the app's dedicated local-ADB key still works.
 
+V643 is hardware validated. V637 and V655/V665/V667 are explicitly marked
+experimental and display a kernel-panic/power-cycle warning before both manual
+and automatic opt-in. They use separate binaries, modules, hashes and exact
+firmware/kernel/policy checks.
+
 After confirmation, Android's `BOOT_COMPLETED` broadcast starts a visible
-foreground service. The worker repeats the exact V643 checks and permits one
-attempt per boot. It never enables V637/V655/V665/V667. If an attempt is
-interrupted before it reports success, a persistent latch disables automation
-at the following boot. The worker does not automatically reboot the TV.
+foreground service. The worker repeats the authorized exact-profile checks and
+permits one attempt per boot. If an attempt is interrupted before it reports
+success, a persistent latch disables automation at the following boot. The
+worker does not automatically reboot the TV.
 
 An already enabled option remains selectable even without root, so it can
 always be turned off. The root itself is still volatile and disappears on
@@ -36,11 +40,11 @@ reboot; only the user's opt-in preference persists.
 This app intentionally supports only
 [Philiphall6/ReSukiSU](https://github.com/Philiphall6/ReSukiSU), release
 [`tcl-c855-v1.0`](https://github.com/Philiphall6/ReSukiSU/releases/tag/tcl-c855-v1.0),
-commit `68e8d3333d1fdbaf9ce8e2aec5e31abca7e3cbd9`, and manager package
+module baseline commit `68e8d3333d1fdbaf9ce8e2aec5e31abca7e3cbd9`, and manager package
 `com.philiphall6.resukisu.tcl`.
 
 The upstream generic ReSukiSU manager is not a substitute. The build script
-rejects a Git checkout whose origin or commit does not match the TCL fork, and
+rejects a Git checkout outside the TCL fork/module ancestry, and
 the app pins the SHA-256 hashes of its ARMv7 `ksud`, ARM64 helper, and exact
 TCL V643 kernel module.
 
@@ -87,9 +91,9 @@ The resulting APK is `android-app/build/TCL-Root-Verifier.apk`.
 
 ## Safety scope
 
-The v1.0 profile is restricted to TCL T653T01 V643, Android 14, kernel
-`5.15.180-android14-11`, the pinned SELinux policy, AVB green/locked, and a
-fresh boot with no root module already loaded. It permits one attempt per boot.
+Every profile is restricted to an exact TCL T653T01 firmware, Android 14,
+kernel, pinned SELinux policy, AVB green/locked, and a fresh boot with no root
+module already loaded. It permits one attempt per boot.
 It does not flash, unlock the bootloader, patch `boot.img` or VBMeta, or write
 to a partition.
 

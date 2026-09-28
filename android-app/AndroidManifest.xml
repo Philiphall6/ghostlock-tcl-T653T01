@@ -48,7 +48,7 @@
             android:stopWithTask="false">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Owner-enabled, build-pinned temporary-root research worker for TCL T653T01 V643" />
+                android:value="Owner-enabled, exact-profile temporary-root research worker for TCL T653T01" />
         </service>
     </application>
 </manifest>
